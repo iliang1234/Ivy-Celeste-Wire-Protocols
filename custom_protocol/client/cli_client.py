@@ -8,6 +8,8 @@ from typing import Optional
 import struct
 import sys
 
+import pdb
+
 from shared.constants import DEFAULT_HOST, DEFAULT_PORT, MessageType, ErrorCode, SuccessCode
 from shared.security import hash_password, encode_bytes, decode_bytes
 from custom_protocol.protocol import Protocol
@@ -27,110 +29,120 @@ class ChatClient:
     def connect_to_server(self) -> bool:
         """Connect to the chat server."""
         try:
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
+            # Clean up existing connection if any
+            self.cleanup_connection()
             
+            # Create new connection
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.connected = True
             
-            if self.message_thread and self.message_thread.is_alive():
-                self.connected = False
-                self.message_thread.join(timeout=1)
-            
+            # Start message listener thread
             self.message_thread = threading.Thread(target=self.listen_for_messages, daemon=True)
             self.message_thread.start()
             return True
+            
         except Exception as e:
             logger.error(f"Failed to connect to server: {e}")
-            self.connected = False
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
+            self.cleanup_connection()
             return False
+    
+    def cleanup_connection(self):
+        """Clean up the existing connection."""
+        self.connected = False
+        
+        if self.message_thread and self.message_thread.is_alive():
+            try:
+                self.message_thread.join(timeout=1)
+            except:
+                pass
+        
+        if self.socket:
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
     
     def listen_for_messages(self):
         """Listen for incoming messages from the server."""
-        try:
-            while self.connected:
+        while self.connected:
+            try:
                 # First read exactly HEADER_SIZE bytes
-                header = b''
-                while len(header) < Protocol.HEADER_SIZE:
-                    chunk = self.socket.recv(Protocol.HEADER_SIZE - len(header))
-                    if not chunk:
-                        return
-                    header += chunk
+                header = self.recv_all(Protocol.HEADER_SIZE)
+                if not header:
+                    break
 
                 # Parse header
                 msg_type, payload_len, checksum = Protocol.parse_header(header)
                 
                 # Read payload
-                payload = b''
-                while len(payload) < payload_len:
-                    chunk = self.socket.recv(payload_len - len(payload))
-                    if not chunk:
-                        return
-                    payload += chunk
+                payload = self.recv_all(payload_len)
+                if not payload:
+                    break
                 
                 if not Protocol.verify_checksum(payload, checksum):
                     logger.error("Checksum verification failed")
                     continue
                 
                 self.handle_server_message(msg_type, payload)
+            
+            except Exception as e:
+                logger.error(f"Error in message listener: {e}")
+                break
         
+        self.cleanup_connection()
+        print("\nLost connection to server")
+    
+    def recv_all(self, length: int) -> Optional[bytes]:
+        """Receive exactly length bytes from the socket."""
+        if not self.socket:
+            return None
+            
+        data = bytearray()
+        try:
+            while len(data) < length:
+                chunk = self.socket.recv(length - len(data))
+                if not chunk:
+                    return None
+                data.extend(chunk)
+            return bytes(data)
         except Exception as e:
-            logger.error(f"Error in message listener: {e}")
-            self.connected = False
-            print("\nLost connection to server")
-            sys.exit(1)
+            logger.error(f"Error receiving data: {e}")
+            return None
     
     def handle_server_message(self, msg_type: int, payload: bytes):
         """Handle incoming server messages."""
         try:
             if msg_type == MessageType.ERROR:
                 error_code = struct.unpack("!H", payload)[0]
-                print(f"\nError: {error_code}")
+                print(f"\nError: {ErrorCode(error_code).name}")
+                return
             
-            elif msg_type == MessageType.SUCCESS:
-                success_code = struct.unpack("!H", payload[:2])[0]
+            if msg_type == MessageType.SUCCESS:
+                print(f"\nOperation {msg_type} successful!")
+            
+            elif msg_type == MessageType.LIST_ACCOUNTS:
+                accounts = payload.decode().split('\n')
+                if accounts and accounts[0]:
+                    print("\nUsers:")
+                    for account in accounts:
+                        print(f"- {account}")
+                else:
+                    print("\nNo users found.")
+            
+            elif msg_type == MessageType.READ_MESSAGES:
+                messages = payload.decode().split('\n')
+                if messages and messages[0]:
+                    print("\nMessages:")
+                    for message in messages:
+                        print(message)
+                else:
+                    print("\nNo messages.")
                 
-                if success_code == SuccessCode.LOGIN_SUCCESS:
-                    unread_count = struct.unpack("!I", payload[2:])[0]
-                    print(f"\nLogin successful! You have {unread_count} unread messages.")
-                
-                elif success_code == SuccessCode.ACCOUNT_CREATED:
-                    print("\nAccount created successfully!")
-                
-                elif success_code == SuccessCode.MESSAGE_SENT:
-                    print("\nMessage sent successfully!")
-                
-                elif success_code == SuccessCode.MESSAGES_READ:
-                    count = struct.unpack("!I", payload[2:6])[0]
-                    if count == 0:
-                        print("\nNo new messages.")
-                    else:
-                        print(f"\nReceived {count} messages:")
-                        pos = 6
-                        for _ in range(count):
-                            msg_id = struct.unpack("!I", payload[pos:pos+4])[0]
-                            pos += 4
-                            sender_len = struct.unpack("!H", payload[pos:pos+2])[0]
-                            pos += 2
-                            sender = payload[pos:pos+sender_len].decode()
-                            pos += sender_len
-                            content_len = struct.unpack("!I", payload[pos:pos+4])[0]
-                            pos += 4
-                            content = payload[pos:pos+content_len].decode()
-                            pos += content_len
-                            timestamp = struct.unpack("!Q", payload[pos:pos+8])[0]
-                            pos += 8
-                            print(f"From {sender}: {content}")
+
         
         except Exception as e:
             logger.error(f"Error handling server message: {e}")
@@ -141,12 +153,11 @@ class ChatClient:
             print("Failed to connect to server")
             return
         
-        password_hash = hash_password(password)
-        payload = Protocol.create_account_payload(username, password_hash)
+        payload = username.encode()
         packet = Protocol.create_packet(MessageType.CREATE_ACCOUNT, payload)
         
         try:
-            self.socket.send(packet)
+            self.send_packet(packet)
         except Exception as e:
             logger.error(f"Failed to send create account request: {e}")
             print("Failed to send create account request")
@@ -157,24 +168,27 @@ class ChatClient:
             print("Failed to connect to server")
             return
         
-        password_hash = hash_password(password)
-        payload = Protocol.login_payload(username, password_hash)
+        payload = username.encode()
         packet = Protocol.create_packet(MessageType.LOGIN, payload)
         
         try:
-            self.socket.send(packet)
-            self.username = username
+            if self.send_packet(packet):
+                self.username = username
         except Exception as e:
             logger.error(f"Failed to send login request: {e}")
             print("Failed to send login request")
     
     def list_users(self, pattern: Optional[str] = None):
         """List users matching the pattern."""
-        payload = Protocol.list_accounts_payload(pattern)
+        if not self.connected and not self.connect_to_server():
+            print("Failed to connect to server")
+            return
+            
+        payload = pattern.encode() if pattern else b""
         packet = Protocol.create_packet(MessageType.LIST_ACCOUNTS, payload)
         
         try:
-            self.socket.send(packet)
+            self.send_packet(packet)
         except Exception as e:
             logger.error(f"Failed to list users: {e}")
             print("Failed to list users")
@@ -205,8 +219,12 @@ class ChatClient:
     
     def send_message(self, recipient: str, message: str):
         """Send a message to a user."""
+        if not self.connected and not self.connect_to_server():
+            print("Failed to connect to server")
+            return
+            
         try:
-            payload = Protocol.send_message_payload(recipient, message.encode())
+            payload = f"{recipient}\n{message}".encode()
             packet = Protocol.create_packet(MessageType.SEND_MESSAGE, payload)
             if not self.send_packet(packet):
                 print("Failed to send message")
@@ -216,11 +234,14 @@ class ChatClient:
     
     def read_messages(self):
         """Read unread messages."""
-        payload = Protocol.read_messages_payload()
-        packet = Protocol.create_packet(MessageType.READ_MESSAGES, payload)
-        
+        if not self.connected and not self.connect_to_server():
+            print("Failed to connect to server")
+            return
+            
         try:
-            self.socket.send(packet)
+            packet = Protocol.create_packet(MessageType.READ_MESSAGES, b"")
+            if not self.send_packet(packet):
+                print("Failed to read messages")
         except Exception as e:
             logger.error(f"Failed to read messages: {e}")
             print("Failed to read messages")
