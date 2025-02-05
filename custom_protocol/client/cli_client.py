@@ -121,8 +121,8 @@ class ChatClient:
                 print(f"\nError: {ErrorCode(error_code).name}")
                 return
             
-            if msg_type == MessageType.SUCCESS:
-                print(f"\nOperation {msg_type} successful!")
+            # if msg_type == MessageType.SUCCESS:
+            #     print(f"\nOperation successful!")
             
             elif msg_type == MessageType.LIST_ACCOUNTS:
                 accounts = payload.decode().split('\n')
@@ -158,6 +158,7 @@ class ChatClient:
         
         try:
             self.send_packet(packet)
+            logger.info('CREATE_ACCOUNT request sent successfully')
         except Exception as e:
             logger.error(f"Failed to send create account request: {e}")
             print("Failed to send create account request")
@@ -174,30 +175,98 @@ class ChatClient:
         try:
             if self.send_packet(packet):
                 self.username = username
+                logger.info('LOGIN request sent successfully')
         except Exception as e:
             logger.error(f"Failed to send login request: {e}")
             print("Failed to send login request")
-    
-    def list_users(self, pattern: Optional[str] = None):
-        """List users matching the pattern."""
+
+    def list_users(self, pattern: Optional[str] = None, page_size: int = 10):
+        """List user accounts matching a wildcard pattern with pagination."""
         if not self.connected and not self.connect_to_server():
             print("Failed to connect to server")
             return
-            
+
         payload = pattern.encode() if pattern else b""
         packet = Protocol.create_packet(MessageType.LIST_ACCOUNTS, payload)
-        
+
+        logger.info(f"Sending LIST_ACCOUNTS request with payload: {payload}")
+
         try:
-            self.send_packet(packet)
+            if not self.send_packet(packet):
+                print("Failed to list users")
+                return
+
+            # Receive header from server
+            header = self.recv_all(Protocol.HEADER_SIZE)
+            if not header:
+                print("No response from server")
+                return
+
+            # Parse header
+            msg_type, payload_len, checksum = Protocol.parse_header(header)
+
+            # Receive payload
+            payload = self.recv_all(payload_len)
+            if not payload:
+                print("Error receiving user list from server")
+                return
+
+            # Verify checksum
+            if not Protocol.verify_checksum(payload, checksum):
+                logger.error("Checksum verification failed")
+                print("Error: Checksum verification failed")
+                return
+
+            if msg_type == MessageType.ERROR:
+                error_code = struct.unpack("!H", payload)[0]
+                logger.error(f"Received error from server: {ErrorCode(error_code).name}")
+                print(f"\nError: {ErrorCode(error_code).name}")
+                return
+
+            if msg_type == MessageType.LIST_ACCOUNTS:
+                accounts = payload.decode().split('\n')
+
+                # Apply wildcard filter if a pattern is provided
+                if pattern:
+                    accounts = [account for account in accounts if fnmatch.fnmatch(account, pattern)]
+
+                if not accounts or (len(accounts) == 1 and accounts[0] == ""):
+                    print("\nNo users found.")
+                    return
+
+                # Paginate accounts
+                total_accounts = len(accounts)
+                page = 0
+
+                while True:
+                    start = page * page_size
+                    end = start + page_size
+                    current_page = accounts[start:end]
+
+                    print(f"\nUsers (Page {page + 1}/{(total_accounts // page_size) + 1}):")
+                    for account in current_page:
+                        print(f"- {account}")
+
+                    # Check if there's more to display
+                    if end >= total_accounts:
+                        break
+
+                    next_page = input("\nShow more users? (y/n): ").strip().lower()
+                    if next_page != 'y':
+                        break
+                    page += 1
+
         except Exception as e:
-            logger.error(f"Failed to list users: {e}")
-            print("Failed to list users")
+            logger.error(f"Error in list_users: {e}")
+            print("Error listing users.")
+
+
     
     def send_packet(self, packet: bytes) -> bool:
-        """Send a packet to the server."""
+        """Send a packet to the server, attempt reconnecting if needed."""
         if not self.connected:
             if not self.connect_to_server():
-                return False
+                return False  # Give up if reconnection fails
         
         try:
             total_sent = 0
@@ -209,13 +278,10 @@ class ChatClient:
             return True
         except Exception as e:
             logger.error(f"Failed to send packet: {e}")
-            self.connected = False
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
-            return False
+            self.cleanup_connection()  # Cleanup on failure
+            return False  # Return failure instead of letting it silently fail
+
+
     
     def send_message(self, recipient: str, message: str):
         """Send a message to a user."""

@@ -39,40 +39,41 @@ class ChatServer:
         username = None
         client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-        while True:
-            try:
+        try:
+            while True:
                 header = self.recv_all(client_socket, Protocol.HEADER_SIZE)
                 if not header:
-                    logger.info("Client disconnected")
-                    break
+                    logger.info("Client disconnected (no header received).")
+                    break  # Exit the loop if the client disconnected
 
                 msg_type, payload_len, checksum = Protocol.parse_header(header)
                 payload = self.recv_all(client_socket, payload_len)
                 if not payload:
-                    logger.info("Client disconnected during payload read")
-                    break
+                    logger.info("Client disconnected during payload read.")
+                    break  # Exit if payload could not be read
 
                 if not Protocol.verify_checksum(payload, checksum):
                     logger.error("Checksum verification failed")
                     continue
 
                 response = self.process_message(client_socket, msg_type, payload, username)
-                packet = Protocol.create_packet(response[0], response[1])
-                total_sent = 0
-                while total_sent < len(packet):
-                    sent = client_socket.send(packet[total_sent:])
-                    if sent == 0:
-                        raise RuntimeError("Socket connection broken")
-                    total_sent += sent
+                if response:
+                    packet = Protocol.create_packet(response[0], response[1])
+                    try:
+                        client_socket.sendall(packet)  # Ensure full packet is sent
+                    except socket.error as e:
+                        logger.error(f"Failed to send response: {e}")
+                        break  # Stop processing if sending fails
 
                 if msg_type == MessageType.DELETE_ACCOUNT and response[0] == MessageType.SUCCESS:
                     break  # Stop processing if account is deleted
 
-            except Exception as e:
-                logger.error(f"Error handling client: {e}")
-                break
+        except Exception as e:
+            logger.error(f"Error handling client: {e}")
 
+        logger.info("Closing client connection.")
         client_socket.close()
+
 
     def process_message(self, client_socket: socket.socket, msg_type: int, payload: bytes, username: Optional[str]) -> tuple:
         """Process incoming messages and return a response tuple (MessageType, payload)."""
@@ -105,11 +106,17 @@ class ChatServer:
         """Receive a specific amount of bytes from a socket."""
         data = b""
         while len(data) < length:
-            more = sock.recv(length - len(data))
-            if not more:
+            try:
+                more = sock.recv(length - len(data))
+                if not more:
+                    logger.warning("⚠️ Client disconnected while receiving data.")
+                    return b""  # Returning empty bytes signals a disconnect
+                data += more
+            except socket.error as e:
+                logger.error(f"🚨 Socket error while receiving data: {e}")
                 return b""
-            data += more
         return data
+
 
     def handle_create_account(self, payload: bytes) -> tuple:
         """Handles account creation."""
