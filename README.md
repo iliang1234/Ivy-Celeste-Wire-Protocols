@@ -42,22 +42,52 @@ cd Ivy-Celeste-Wire-Protocols
 pip install -r requirements.txt
 ```
 
+## Configuration
+
+The application can be configured using either a config file (`config.ini`) or environment variables.
+
+### Using config.ini
+
+Create a `config.ini` file in the root directory:
+
+```ini
+[server]
+host = 0.0.0.0
+port = 5001
+
+[client]
+host = localhost
+port = 8000
+
+[websocket]
+url = http://localhost:5001
+```
+
+### Using Environment Variables
+
+Alternatively, use environment variables to override any config file settings:
+
+```bash
+export CHAT_SERVER_HOST=0.0.0.0
+export CHAT_SERVER_PORT=5001
+export CHAT_CLIENT_HOST=localhost
+export CHAT_CLIENT_PORT=8000
+export CHAT_WEBSOCKET_URL=http://localhost:5001
+```
+
 ## Running the Application
 
 1. Start the server:
 ```bash
-python json_protocol/server/server.py
+python -m json_protocol.server.server
 ```
 
 2. Start the client application:
 ```bash
-python json_protocol/client/app.py
+python -m json_protocol.client.app
 ```
 
-3. Open your web browser and navigate to:
-```
-http://localhost:8000
-```
+3. Open your web browser and navigate to the client URL (default: http://localhost:8000)
 
 ## Project Structure
 
@@ -120,11 +150,11 @@ The application includes comprehensive error handling for:
 
 ## Technical Details
 
-- Server runs on port 5001 (WebSocket)
-- Client web interface runs on port 8000
-- Uses Flask-SocketIO for real-time communication
+- Configurable server and client ports
+- WebSocket-based real-time communication using Flask-SocketIO
 - Bootstrap 5.1.3 for responsive design
 - In-memory storage for messages and user data
+- Configuration via config file or environment variables
 
 ## Contributing
 

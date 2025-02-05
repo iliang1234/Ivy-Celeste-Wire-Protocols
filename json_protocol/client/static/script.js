@@ -1,12 +1,23 @@
 class ChatClient {
     constructor() {
         this.messageIdCounter = 0;
-        this.socket = io('http://localhost:5001');
-        this.currentUser = null;
-        this.selectedRecipient = null;
-        this.userPage = 1;
-        this.setupSocketHandlers();
-        this.setupEventListeners();
+        this.initializeSocket();
+    }
+
+    async initializeSocket() {
+        try {
+            const response = await fetch('/config');
+            const config = await response.json();
+            this.socket = io(config.websocket_url);
+            this.currentUser = null;
+            this.selectedRecipient = null;
+            this.userPage = 1;
+            this.setupSocketHandlers();
+            this.setupEventListeners();
+        } catch (error) {
+            console.error('Failed to initialize socket:', error);
+            alert('Failed to connect to chat server. Please try again later.');
+        }
     }
 
     setupSocketHandlers() {
@@ -88,16 +99,25 @@ class ChatClient {
             username: username,
             password: password
         });
+        this.currentUser = username; // Store the logged-in user
     }
+    
 
     logout() {
-        this.currentUser = null;
+        this.currentUser = null;  // Reset user on logout
         this.selectedRecipient = null;
+        
+        // Reset UI
         document.getElementById('auth-form').classList.remove('d-none');
         document.getElementById('chat-interface').classList.add('d-none');
         document.getElementById('username').value = '';
         document.getElementById('password').value = '';
+        document.getElementById('chat-header').textContent = 'Select a user to start chatting';
+        document.getElementById('no-chat-selected').classList.remove('d-none');
+        document.getElementById('chat-area').classList.add('d-none');
+        document.getElementById('message-list').innerHTML = '';
     }
+    
 
     listUsers(pattern = '') {
         this.sendToServer({
@@ -130,13 +150,24 @@ class ChatClient {
     handleServerMessage(message) {
         if (message.type === 'error') {
             alert(message.message);
+            if (message.message === 'Username already exists') {
+                document.getElementById('username').value = '';
+                document.getElementById('password').value = '';
+            }
             return;
+        }
+        
+        // Hide chat area when first logging in
+        if (message.type === 'success' && message.unread_count !== undefined) {
+            document.getElementById('no-chat-selected').classList.remove('d-none');
+            document.getElementById('chat-area').classList.add('d-none');
+            document.getElementById('chat-header').textContent = 'Select a user to start chatting';
         }
 
         if (message.type === 'success') {
             if (message.unread_count !== undefined) {
                 // Login/registration successful
-                this.currentUser = document.getElementById('username').value;
+                this.currentUser = document.getElementById('username').value; // Set currentUser
                 document.getElementById('auth-form').classList.add('d-none');
                 document.getElementById('chat-interface').classList.remove('d-none');
                 this.listUsers();
@@ -153,13 +184,8 @@ class ChatClient {
                     msgElement.remove();
                 }
             } else if (message.message === "Message sent successfully") {
-                // Display sent message immediately
-                this.displayMessage({
-                    id: message.message_id,
-                    sender: this.currentUser,
-                    content: message.content,
-                    timestamp: new Date().toISOString()
-                });
+                // Message sent successfully, but no need to display it here
+                // as it will be displayed through the new_message event
             }
         }
     }
@@ -183,20 +209,49 @@ class ChatClient {
                     el.classList.remove('active');
                 });
                 userElement.classList.add('active');
+                
+                // After selecting a new user, re-fetch and display their messages
+                this.fetchMessagesForRecipient(username);
             });
             userList.appendChild(userElement);
         });
-
+    
         document.getElementById('prev-users').disabled = this.userPage <= 1;
         document.getElementById('next-users').disabled = this.userPage >= totalPages;
     }
+    
+    fetchMessagesForRecipient(recipient) {
+        this.selectedRecipient = recipient;
+        
+        // Update UI
+        document.getElementById('chat-header').textContent = `Chat with ${recipient}`;
+        document.getElementById('no-chat-selected').classList.add('d-none');
+        document.getElementById('chat-area').classList.remove('d-none');
+        
+        // Clear existing messages
+        document.getElementById('message-list').innerHTML = '';
+        
+        // Fetch messages for this recipient
+        this.sendToServer({
+            type: 'read_messages',
+            recipient: recipient
+        });
+    }    
 
     displayMessage(message) {
         const messageList = document.getElementById('message-list');
         const messageElement = document.createElement('div');
         messageElement.classList.add('message');
-        const isSent = message.sender === this.currentUser;
-        messageElement.classList.add(isSent ? 'sent' : 'received');
+        
+        // Use is_sent flag if available, otherwise determine based on sender
+        const isSent = message.hasOwnProperty('is_sent') ? message.is_sent : message.sender === this.currentUser;
+        
+        // Add the appropriate class based on whether the message was sent or received
+        if (isSent) {
+            messageElement.classList.add('sent');
+        } else {
+            messageElement.classList.add('received');
+        }
         
         // Assign a message ID if not present
         if (!message.id) {
@@ -233,10 +288,18 @@ class ChatClient {
         
         messageList.appendChild(messageElement);
         messageList.scrollTop = messageList.scrollHeight;
-    }
+    }    
 }
 
 // Initialize the chat client when the page loads
 window.addEventListener('load', () => {
     new ChatClient();
+});
+
+// Handle connection errors
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('Unhandled promise rejection:', event.reason);
+    if (event.reason.message.includes('Failed to fetch')) {
+        alert('Unable to connect to the chat server. Please check your connection and try again.');
+    }
 });

@@ -7,6 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from json_protocol.protocol import Protocol, MessageType
+import uuid
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -135,7 +136,8 @@ def handle_send_message(message):
 
     content = message['content']
     timestamp = datetime.now().isoformat()
-    message_id = message.get('id', len(messages[recipient]))
+    # message_id = message.get('id', len(messages[recipient]))
+    message_id = message.get('id', str(uuid.uuid4()))
     
     new_message = {
         "id": message_id,
@@ -149,7 +151,8 @@ def handle_send_message(message):
     # If recipient is online, deliver immediately
     recipient_socket = users[recipient]['socket_id']
     if recipient_socket:
-        emit('new_message', Protocol.encode(new_message), room=recipient_socket)
+        # emit('new_message', Protocol.encode(new_message), room=recipient_socket)
+        emit('new_message', Protocol.encode(new_message), room=request.sid)
 
     emit('message', Protocol.encode(Protocol.success_response({
         "message": "Message sent successfully",
@@ -164,8 +167,16 @@ def handle_read_messages(message):
         return
 
     count = message.get('count', 10)
-    user_messages = messages[username][:count]
-    messages[username] = messages[username][count:]
+
+    # Retrieve messages where user is sender or recipient
+    user_messages = []
+    for recipient, msgs in messages.items():
+        for msg in msgs:
+            if msg["sender"] == username or recipient == username:
+                user_messages.append(msg)
+
+    # Sort by timestamp
+    user_messages = sorted(user_messages, key=lambda x: x["timestamp"])[:count]
 
     emit('message', Protocol.encode(Protocol.success_response({
         "messages": user_messages
@@ -218,5 +229,8 @@ def handle_delete_account(message):
         "message": "Account deleted successfully"
     })))
 
+from ..config import load_config
+
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5001, debug=True)
+    config = load_config('server')
+    socketio.run(app, host=config['host'], port=config['port'], debug=True)
