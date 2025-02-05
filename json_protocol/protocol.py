@@ -1,90 +1,105 @@
-"""JSON protocol implementation for the chat application."""
-
+from enum import Enum
 import json
-import struct
-from typing import Dict, Any, Optional
-from ..shared.constants import MessageType
+import bcrypt
+
+class MessageType(Enum):
+    CREATE_ACCOUNT = "create_account"
+    LOGIN = "login"
+    LIST_ACCOUNTS = "list_accounts"
+    SEND_MESSAGE = "send_message"
+    READ_MESSAGES = "read_messages"
+    DELETE_MESSAGES = "delete_messages"
+    DELETE_ACCOUNT = "delete_account"
+    ERROR = "error"
+    SUCCESS = "success"
 
 class Protocol:
-    """
-    JSON protocol format:
-    
-    Header (8 bytes):
-    - Message length (4 bytes): Length of the JSON payload
-    - Message type (4 bytes): Type of message
-    
-    Payload (variable length):
-    - JSON encoded message
-    """
-    
-    HEADER_FORMAT = "!II"  # network byte order, 2 unsigned ints
-    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
-    
     @staticmethod
-    def create_account_payload(username: str, password_hash: bytes) -> Dict[str, Any]:
-        """Create account request payload."""
+    def create_account_request(username: str, password: str) -> dict:
+        """Create an account creation request"""
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password.encode(), salt)
         return {
+            "type": MessageType.CREATE_ACCOUNT.value,
             "username": username,
-            "password_hash": encode_bytes(password_hash)
+            "password_hash": hashed.decode(),
         }
-    
+
     @staticmethod
-    def login_payload(username: str, password_hash: bytes) -> Dict[str, Any]:
-        """Login request payload."""
-        return Protocol.create_account_payload(username, password_hash)
-    
-    @staticmethod
-    def list_accounts_payload(pattern: Optional[str] = None) -> Dict[str, Any]:
-        """List accounts request payload."""
-        return {"pattern": pattern} if pattern else {}
-    
-    @staticmethod
-    def send_message_payload(recipient: str, message: str) -> Dict[str, Any]:
-        """Send message request payload."""
+    def login_request(username: str, password: str) -> dict:
+        """Create a login request"""
         return {
+            "type": MessageType.LOGIN.value,
+            "username": username,
+            "password": password,
+        }
+
+    @staticmethod
+    def list_accounts_request(pattern: str = None, page: int = 1) -> dict:
+        """Create a request to list accounts"""
+        return {
+            "type": MessageType.LIST_ACCOUNTS.value,
+            "pattern": pattern,
+            "page": page,
+        }
+
+    @staticmethod
+    def send_message_request(recipient: str, content: str) -> dict:
+        """Create a message send request"""
+        return {
+            "type": MessageType.SEND_MESSAGE.value,
             "recipient": recipient,
-            "message": message
+            "content": content,
+            "timestamp": None,  # Will be set by server
         }
-    
+
     @staticmethod
-    def read_messages_payload(count: Optional[int] = None) -> Dict[str, Any]:
-        """Read messages request payload."""
-        return {"count": count} if count is not None else {}
-    
-    @staticmethod
-    def delete_messages_payload(message_ids: list[int]) -> Dict[str, Any]:
-        """Delete messages request payload."""
-        return {"message_ids": message_ids}
-    
-    @staticmethod
-    def delete_account_payload() -> Dict[str, Any]:
-        """Delete account request payload."""
-        return {}
-    
-    @staticmethod
-    def error_payload(error_code: int, message: str) -> Dict[str, Any]:
-        """Error response payload."""
+    def read_messages_request(count: int = 10) -> dict:
+        """Create a request to read messages"""
         return {
-            "error_code": error_code,
-            "message": message
+            "type": MessageType.READ_MESSAGES.value,
+            "count": count,
         }
-    
+
     @staticmethod
-    def success_payload(success_code: int, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Success response payload."""
-        payload = {"success_code": success_code}
+    def delete_messages_request(message_ids: list) -> dict:
+        """Create a request to delete messages"""
+        return {
+            "type": MessageType.DELETE_MESSAGES.value,
+            "message_ids": message_ids,
+        }
+
+    @staticmethod
+    def delete_account_request() -> dict:
+        """Create a request to delete the current account"""
+        return {
+            "type": MessageType.DELETE_ACCOUNT.value,
+        }
+
+    @staticmethod
+    def error_response(message: str) -> dict:
+        """Create an error response"""
+        return {
+            "type": MessageType.ERROR.value,
+            "message": message,
+        }
+
+    @staticmethod
+    def success_response(data: dict = None) -> dict:
+        """Create a success response"""
+        response = {
+            "type": MessageType.SUCCESS.value,
+        }
         if data:
-            payload.update(data)
-        return payload
-    
+            response.update(data)
+        return response
+
     @staticmethod
-    def create_packet(msg_type: int, payload: Dict[str, Any]) -> bytes:
-        """Create a complete packet with header and JSON payload."""
-        json_payload = json.dumps(payload).encode()
-        header = struct.pack(Protocol.HEADER_FORMAT, len(json_payload), msg_type)
-        return header + json_payload
-    
+    def encode(message: dict) -> str:
+        """Encode a message to JSON string"""
+        return json.dumps(message)
+
     @staticmethod
-    def parse_header(header: bytes) -> tuple[int, int]:
-        """Parse packet header, return (payload_length, message_type)."""
-        return struct.unpack(Protocol.HEADER_FORMAT, header)
+    def decode(message: str) -> dict:
+        """Decode a JSON string to a message"""
+        return json.loads(message)
