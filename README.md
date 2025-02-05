@@ -44,11 +44,11 @@ A client-server chat application implemented with both custom wire protocol and 
 ### Custom Protocol Version
 1. Start the server:
    ```bash
-   python custom_protocol/server/server.py
+   source venv/bin/activate && PYTHONPATH=/Users/iliang/Desktop/CS\ 2620/Ivy-Celeste-Wire-Protocols python3 custom_protocol/server/server.py
    ```
 2. Start the client:
    ```bash
-   python custom_protocol/client/client.py
+   source venv/bin/activate && PYTHONPATH=/Users/iliang/Desktop/CS\ 2620/Ivy-Celeste-Wire-Protocols python3 custom_protocol/client/cli_client.py
    ```
 
 ### JSON Protocol Version
