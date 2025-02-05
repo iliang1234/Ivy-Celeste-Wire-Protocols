@@ -1,6 +1,9 @@
 class ChatClient {
     constructor() {
         this.messageIdCounter = 0;
+        this.currentUser = null;
+        this.selectedRecipient = null;
+        this.userPage = 1;
         this.initializeSocket();
     }
 
@@ -9,9 +12,6 @@ class ChatClient {
             const response = await fetch('/config');
             const config = await response.json();
             this.socket = io(config.websocket_url);
-            this.currentUser = null;
-            this.selectedRecipient = null;
-            this.userPage = 1;
             this.setupSocketHandlers();
             this.setupEventListeners();
         } catch (error) {
@@ -32,7 +32,13 @@ class ChatClient {
 
         this.socket.on('new_message', (data) => {
             const message = JSON.parse(data);
-            this.displayMessage(message);
+            // Only display the message if it's from the currently selected chat
+            if (message.sender === this.selectedRecipient || message.recipient === this.selectedRecipient) {
+                // Don't display messages we sent (they're already displayed)
+                if (message.sender !== this.currentUser) {
+                    this.displayMessage(message);
+                }
+            }
         });
     }
 
@@ -184,8 +190,16 @@ class ChatClient {
                     msgElement.remove();
                 }
             } else if (message.message === "Message sent successfully") {
-                // Message sent successfully, but no need to display it here
-                // as it will be displayed through the new_message event
+                // When a message is sent successfully, display it immediately as a sent message
+                const sentMessage = {
+                    id: message.message_id,
+                    content: message.content,
+                    sender: this.currentUser,
+                    recipient: this.selectedRecipient,
+                    timestamp: new Date().toISOString(),
+                    is_sent: true
+                };
+                this.displayMessage(sentMessage);
             }
         }
     }
@@ -221,6 +235,8 @@ class ChatClient {
     }
     
     fetchMessagesForRecipient(recipient) {
+        if (!recipient) return;
+        
         this.selectedRecipient = recipient;
         
         // Update UI

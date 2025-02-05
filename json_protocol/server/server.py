@@ -136,23 +136,30 @@ def handle_send_message(message):
 
     content = message['content']
     timestamp = datetime.now().isoformat()
-    # message_id = message.get('id', len(messages[recipient]))
     message_id = message.get('id', str(uuid.uuid4()))
     
     new_message = {
         "id": message_id,
         "sender": sender,
+        "recipient": recipient,
         "content": content,
         "timestamp": timestamp
     }
     
-    messages[recipient].append(new_message)
+    # Initialize message lists if they don't exist
+    if sender not in messages:
+        messages[sender] = []
+    if recipient not in messages:
+        messages[recipient] = []
     
-    # If recipient is online, deliver immediately
+    # Store message in both users' message lists
+    messages[sender].append({**new_message, 'is_sent': True})
+    messages[recipient].append({**new_message, 'is_sent': False})
+    
+    # If recipient is online, deliver the message
     recipient_socket = users[recipient]['socket_id']
     if recipient_socket:
-        # emit('new_message', Protocol.encode(new_message), room=recipient_socket)
-        emit('new_message', Protocol.encode(new_message), room=request.sid)
+        emit('new_message', Protocol.encode({**new_message, 'is_sent': False}), room=recipient_socket)
 
     emit('message', Protocol.encode(Protocol.success_response({
         "message": "Message sent successfully",
@@ -166,20 +173,25 @@ def handle_read_messages(message):
         emit('message', Protocol.encode(Protocol.error_response("Not logged in")))
         return
 
-    count = message.get('count', 10)
+    recipient = message.get('recipient')
+    if not recipient:
+        emit('message', Protocol.encode(Protocol.error_response("Recipient not specified")))
+        return
 
-    # Retrieve messages where user is sender or recipient
-    user_messages = []
-    for recipient, msgs in messages.items():
-        for msg in msgs:
-            if msg["sender"] == username or recipient == username:
-                user_messages.append(msg)
+    # Get messages between these two users
+    chat_messages = []
+    if username in messages:
+        chat_messages.extend([
+            msg for msg in messages[username]
+            if msg['sender'] == username and msg['recipient'] == recipient
+            or msg['sender'] == recipient and msg['recipient'] == username
+        ])
 
     # Sort by timestamp
-    user_messages = sorted(user_messages, key=lambda x: x["timestamp"])[:count]
+    chat_messages = sorted(chat_messages, key=lambda x: x['timestamp'])
 
     emit('message', Protocol.encode(Protocol.success_response({
-        "messages": user_messages
+        'messages': chat_messages
     })))
 
 def handle_delete_messages(message):
