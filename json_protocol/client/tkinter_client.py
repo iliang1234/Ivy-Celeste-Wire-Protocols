@@ -55,6 +55,15 @@ class ChatClient:
         self.users_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
         
         ttk.Label(self.users_frame, text="Users:").pack()
+        
+        # Add search frame
+        self.search_frame = ttk.Frame(self.users_frame)
+        self.search_frame.pack(fill=tk.X, pady=(0, 5))
+        self.search_entry = ttk.Entry(self.search_frame)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.search_button = ttk.Button(self.search_frame, text="Search", command=self.search_users)
+        self.search_button.pack(side=tk.RIGHT)
+        
         self.users_listbox = tk.Listbox(self.users_frame, width=20)
         self.users_listbox.pack(fill=tk.Y, expand=True)
         self.users_listbox.bind('<<ListboxSelect>>', self.on_user_select)
@@ -196,6 +205,23 @@ class ChatClient:
             self.users_listbox.delete(0, tk.END)
             for user in response['accounts']:
                 if user != self.current_user:
+                    self.users_listbox.insert(tk.END, user)
+                    
+    def search_users(self):
+        search_pattern = self.search_entry.get()
+        response = self.send_request({
+            'action': 'list_accounts',
+            'pattern': search_pattern
+        })
+        
+        if response['status'] == 'success':
+            self.users_listbox.delete(0, tk.END)
+            matching_users = [user for user in response['accounts'] if user != self.current_user]
+            
+            if not matching_users:
+                messagebox.showinfo("Search Result", "No users found matching your search.")
+            else:
+                for user in matching_users:
                     self.users_listbox.insert(tk.END, user)
                     
     def send_message(self):
