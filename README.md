@@ -1,40 +1,41 @@
-# JSON-Based Chat Application
+# JSON Wire Protocol Chat Application
 
-A real-time chat application built with Python, Flask, and WebSocket technology. This application demonstrates the implementation of a client-server architecture using JSON for message protocols.
+A simple client-server chat application using JSON as the wire protocol. This application allows users to create accounts, send messages, and communicate in real-time with other users.
 
 ## Features
 
-- **Account Management**
+- Account Management
   - Create new accounts with username/password
-  - Secure password storage using bcrypt hashing
-  - Login to existing accounts
-  - View unread message count on login
-
-- **Real-time Messaging**
-  - Send and receive messages instantly
-  - Messages are stored for offline users
-  - Blue bubbles for sent messages, white for received
-  - Timestamps on all messages
-  - Delete your own messages
-
-- **User Interface**
-  - Modern, responsive design using Bootstrap
-  - Real-time updates without page refresh
-  - User list with search functionality
-  - Pagination for large user lists
-  - Clean, intuitive message bubbles
+  - Secure password storage (bcrypt hashing)
+  - Login/Logout functionality
+  
+- Messaging
+  - Real-time message delivery
+  - Offline message storage
+  - Message history
+  
+- User Interface
+  - Clean Tkinter-based GUI
+  - User list with refresh capability
+  - Real-time updates
 
 ## Prerequisites
 
-- Python 3.6+
-- pip (Python package manager)
+- Python 3.x
+- pip (Python package installer)
 
 ## Installation
 
-1. Clone the repository:
+1. Create and activate a virtual environment (recommended):
 ```bash
-git clone <repository-url>
-cd Ivy-Celeste-Wire-Protocols
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows:
+.\venv\Scripts\activate
 ```
 
 2. Install required packages:
@@ -42,124 +43,106 @@ cd Ivy-Celeste-Wire-Protocols
 pip install -r requirements.txt
 ```
 
-## Configuration
-
-The application can be configured using either a config file (`config.ini`) or environment variables.
-
-### Using config.ini
-
-Create a `config.ini` file in the root directory:
-
-```ini
-[server]
-host = 0.0.0.0
-port = 5001
-
-[client]
-host = localhost
-port = 8000
-
-[websocket]
-url = http://localhost:5001
-```
-
-### Using Environment Variables
-
-Alternatively, use environment variables to override any config file settings:
-
-```bash
-export CHAT_SERVER_HOST=0.0.0.0
-export CHAT_SERVER_PORT=5001
-export CHAT_CLIENT_HOST=localhost
-export CHAT_CLIENT_PORT=8000
-export CHAT_WEBSOCKET_URL=http://localhost:5001
-```
-
 ## Running the Application
 
 1. Start the server:
 ```bash
-python -m json_protocol.server.server
+python3 json_protocol/server/server.py
 ```
 
-2. Start the client application:
+2. In a new terminal, start the client:
 ```bash
-python -m json_protocol.client.app
+python3 json_protocol/client/tkinter_client.py
 ```
-
-3. Open your web browser and navigate to the client URL (default: http://localhost:8000)
-
-## Project Structure
-
-```
-json_protocol/
-├── client/
-│   ├── static/
-│   │   ├── index.html    # Web interface
-│   │   ├── script.js     # Client-side logic
-│   │   └── style.css     # Styling
-│   └── app.py           # Client server
-├── server/
-│   └── server.py        # Main server application
-└── protocol.py          # Protocol definitions
-```
-
-## Protocol
-
-The application uses a JSON-based protocol for all communications. Message types include:
-
-- `create_account`: Create a new user account
-- `login`: Authenticate existing users
-- `list_accounts`: Get list of users
-- `send_message`: Send a message to another user
-- `read_messages`: Retrieve unread messages
-- `delete_messages`: Remove messages
-- `delete_account`: Delete user account
-
-## Security Features
-
-- Passwords are hashed using bcrypt before storage
-- Users can only delete their own messages
-- Server validates all operations
-- WebSocket for secure, real-time communication
 
 ## Usage
 
-1. **Creating an Account**
+1. Creating an Account
+   - Launch the client
    - Enter a username and password
-   - Click "Create Account"
-   - If the username exists, you'll be prompted to log in instead
+   - Click "Register"
 
-2. **Sending Messages**
+2. Logging In
+   - Enter your username and password
+   - Click "Login"
+   - You'll see your unread message count
+
+3. Sending Messages
    - Select a recipient from the user list
-   - Type your message in the input box
-   - Press Enter or click Send
+   - Type your message in the text box
+   - Press Enter or click "Send"
 
-3. **Deleting Messages**
-   - Hover over any message you've sent
-   - Click the × button that appears
-   - Confirm deletion when prompted
+4. Other Features
+   - Click "Refresh" to update the user list
+   - Click "Logout" to sign out
+   - Messages are stored when recipients are offline
 
-## Error Handling
+## Protocol Specification
 
-The application includes comprehensive error handling for:
-- Duplicate usernames
-- Invalid login credentials
-- Network disconnections
-- Invalid message operations
+The application uses JSON for all client-server communication. Message formats:
 
-## Technical Details
+1. Account Creation:
+```json
+{
+    "action": "create_account",
+    "username": "string",
+    "password": "string"
+}
+```
 
-- Configurable server and client ports
-- WebSocket-based real-time communication using Flask-SocketIO
-- Bootstrap 5.1.3 for responsive design
-- In-memory storage for messages and user data
-- Configuration via config file or environment variables
+2. Login:
+```json
+{
+    "action": "login",
+    "username": "string",
+    "password": "string"
+}
+```
+
+3. Messaging:
+```json
+{
+    "action": "send_message",
+    "sender": "string",
+    "recipient": "string",
+    "content": "string"
+}
+```
+
+## Architecture
+
+- Server (`server.py`)
+  - Handles multiple client connections using threading
+  - Manages user accounts and message storage
+  - Implements the JSON wire protocol
+
+- Client (`tkinter_client.py`)
+  - Provides GUI using Tkinter
+  - Handles real-time message updates
+  - Implements the client-side protocol
+
+## Security Features
+
+- Passwords are hashed using bcrypt
+- Messages are stored securely on the server
+- No plaintext password transmission
+
+## Troubleshooting
+
+1. Port Already in Use
+   - The server uses port 5001 by default
+   - If the port is in use, modify the port number in both server.py and tkinter_client.py
+
+2. Connection Issues
+   - Ensure the server is running before starting clients
+   - Check that the host and port match in both server and client
+
+3. Tkinter Issues
+   - On macOS, ensure you have python-tk installed:
+     ```bash
+     brew install python-tk@3.13
+     ```
 
 ## Contributing
 
 Feel free to submit issues and enhancement requests!
-
-## License
-
-[Your chosen license]

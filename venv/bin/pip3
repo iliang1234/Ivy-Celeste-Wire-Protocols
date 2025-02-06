@@ -1,5 +1,5 @@
 #!/bin/sh
-'''exec' "/Users/iliang/Desktop/CS 2620/Ivy-Celeste-Wire-Protocols/venv/bin/python" "$0" "$@"
+'''exec' "/Users/iliang/Desktop/CS 2620/Ivy-Celeste-Wire-Protocols/venv/bin/python3.13" "$0" "$@"
 ' '''
 # -*- coding: utf-8 -*-
 import re

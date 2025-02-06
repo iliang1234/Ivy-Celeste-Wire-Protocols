@@ -1,248 +1,178 @@
-from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit
+import json
+import socket
+import threading
 import bcrypt
 from datetime import datetime
-import re
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from json_protocol.protocol import Protocol, MessageType
-import uuid
+from typing import Dict, List, Optional
 
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+class ChatServer:
+    def __init__(self, host: str = 'localhost', port: int = 5001):
+        # Store messages with their read status: {username: {msg_id: {message_data}}}
+        self.messages = {}
+        self.host = host
+        self.port = port
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.accounts: Dict[str, dict] = {}  # username -> {password_hash, messages}
+        self.active_sessions: Dict[str, socket.socket] = {}  # username -> socket
+        self.lock = threading.Lock()
 
-# In-memory storage (replace with database in production)
-users = {}  # username -> {password_hash, socket_id}
-messages = {}  # username -> [messages]
-active_sessions = {}  # socket_id -> username
+    def start(self):
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)
+        print(f"Server started on {self.host}:{self.port}")
+        
+        while True:
+            client_socket, address = self.server_socket.accept()
+            client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
+            client_thread.start()
 
-@socketio.on('connect')
-def handle_connect():
-    print(f"Client connected: {request.sid}")
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    if request.sid in active_sessions:
-        username = active_sessions[request.sid]
-        if username in users:
-            users[username]['socket_id'] = None
-        del active_sessions[request.sid]
-
-@socketio.on('message')
-def handle_message(json_message):
-    message = Protocol.decode(json_message)
-    message_type = message.get('type')
-
-    if message_type == MessageType.CREATE_ACCOUNT.value:
-        handle_create_account(message)
-    elif message_type == MessageType.LOGIN.value:
-        handle_login(message)
-    elif message_type == MessageType.LIST_ACCOUNTS.value:
-        handle_list_accounts(message)
-    elif message_type == MessageType.SEND_MESSAGE.value:
-        handle_send_message(message)
-    elif message_type == MessageType.READ_MESSAGES.value:
-        handle_read_messages(message)
-    elif message_type == MessageType.DELETE_MESSAGES.value:
-        handle_delete_messages(message)
-    elif message_type == MessageType.DELETE_ACCOUNT.value:
-        handle_delete_account(message)
-
-def handle_create_account(message):
-    username = message['username']
-    password = message['password']
-
-    if username in users:
-        emit('message', Protocol.encode(Protocol.error_response("Username already exists")))
-        return
-
-    # Hash the password
-    salt = bcrypt.gensalt()
-    password_hash = bcrypt.hashpw(password.encode(), salt).decode()
-
-    users[username] = {
-        'password_hash': password_hash,
-        'socket_id': request.sid
-    }
-    messages[username] = []
-    active_sessions[request.sid] = username
-    
-    emit('message', Protocol.encode(Protocol.success_response({
-        "message": "Account created successfully",
-        "unread_count": 0
-    })))
-
-def handle_login(message):
-    username = message['username']
-    password = message['password']
-
-    if username not in users:
-        emit('message', Protocol.encode(Protocol.error_response("User not found")))
-        return
-
-    try:
-        stored_hash = users[username]['password_hash'].encode()
-        if not bcrypt.checkpw(password.encode(), stored_hash):
-            emit('message', Protocol.encode(Protocol.error_response("Invalid password")))
-            return
-    except Exception as e:
-        print(f"Error verifying password: {e}")
-        emit('message', Protocol.encode(Protocol.error_response("Error verifying password")))
-        return
-
-    users[username]['socket_id'] = request.sid
-    active_sessions[request.sid] = username
-    unread_count = len(messages[username])
-
-    emit('message', Protocol.encode(Protocol.success_response({
-        "message": "Login successful",
-        "unread_count": unread_count
-    })))
-
-def handle_list_accounts(message):
-    pattern = message.get('pattern', '')
-    page = message.get('page', 1)
-    page_size = 10
-
-    filtered_users = []
-    if pattern:
-        regex = re.compile(pattern.replace('*', '.*'))
-        filtered_users = [u for u in users.keys() if regex.match(u)]
-    else:
-        filtered_users = list(users.keys())
-
-    start_idx = (page - 1) * page_size
-    end_idx = start_idx + page_size
-    page_users = filtered_users[start_idx:end_idx]
-    
-    emit('message', Protocol.encode(Protocol.success_response({
-        "users": page_users,
-        "total": len(filtered_users),
-        "page": page,
-        "total_pages": (len(filtered_users) + page_size - 1) // page_size
-    })))
-
-def handle_send_message(message):
-    sender = active_sessions.get(request.sid)
-    if not sender:
-        emit('message', Protocol.encode(Protocol.error_response("Not logged in")))
-        return
-
-    recipient = message['recipient']
-    if recipient not in users:
-        emit('message', Protocol.encode(Protocol.error_response("Recipient not found")))
-        return
-
-    content = message['content']
-    timestamp = datetime.now().isoformat()
-    message_id = message.get('id', str(uuid.uuid4()))
-    
-    new_message = {
-        "id": message_id,
-        "sender": sender,
-        "recipient": recipient,
-        "content": content,
-        "timestamp": timestamp
-    }
-    
-    # Initialize message lists if they don't exist
-    if sender not in messages:
-        messages[sender] = []
-    if recipient not in messages:
-        messages[recipient] = []
-    
-    # Store message in both users' message lists
-    messages[sender].append({**new_message, 'is_sent': True})
-    messages[recipient].append({**new_message, 'is_sent': False})
-    
-    # If recipient is online, deliver the message
-    recipient_socket = users[recipient]['socket_id']
-    if recipient_socket:
-        emit('new_message', Protocol.encode({**new_message, 'is_sent': False}), room=recipient_socket)
-
-    emit('message', Protocol.encode(Protocol.success_response({
-        "message": "Message sent successfully",
-        "message_id": message_id,
-        "content": content
-    })))
-
-def handle_read_messages(message):
-    username = active_sessions.get(request.sid)
-    if not username:
-        emit('message', Protocol.encode(Protocol.error_response("Not logged in")))
-        return
-
-    recipient = message.get('recipient')
-    if not recipient:
-        emit('message', Protocol.encode(Protocol.error_response("Recipient not specified")))
-        return
-
-    # Get messages between these two users
-    chat_messages = []
-    if username in messages:
-        chat_messages.extend([
-            msg for msg in messages[username]
-            if msg['sender'] == username and msg['recipient'] == recipient
-            or msg['sender'] == recipient and msg['recipient'] == username
-        ])
-
-    # Sort by timestamp
-    chat_messages = sorted(chat_messages, key=lambda x: x['timestamp'])
-
-    emit('message', Protocol.encode(Protocol.success_response({
-        'messages': chat_messages
-    })))
-
-def handle_delete_messages(message):
-    username = active_sessions.get(request.sid)
-    if not username:
-        emit('message', Protocol.encode(Protocol.error_response("Not logged in")))
-        return
-
-    message_ids = set(message['message_ids'])
-    
-    # Verify the user owns these messages
-    for msg_id in message_ids:
-        message_exists = False
-        for msg in messages[username]:
-            if msg['id'] == msg_id and msg['sender'] == username:
-                message_exists = True
+    def handle_client(self, client_socket: socket.socket):
+        while True:
+            try:
+                data = client_socket.recv(4096).decode('utf-8')
+                if not data:
+                    break
+                
+                request = json.loads(data)
+                response = self.process_request(request, client_socket)
+                client_socket.send(json.dumps(response).encode('utf-8'))
+            except Exception as e:
+                print(f"Error handling client: {str(e)}")
                 break
-        if not message_exists:
-            emit('message', Protocol.encode(Protocol.error_response("Cannot delete messages you don't own")))
-            return
+        
+        client_socket.close()
 
-    # Remove the messages
-    messages[username] = [msg for msg in messages[username] 
-                         if msg['id'] not in message_ids]
+    def process_request(self, request: dict, client_socket: socket.socket) -> dict:
+        action = request.get('action')
+        
+        if action == 'create_account':
+            return self.create_account(request['username'], request['password'])
+        elif action == 'login':
+            return self.login(request['username'], request['password'], client_socket)
+        elif action == 'list_accounts':
+            return self.list_accounts(request.get('pattern'))
+        elif action == 'send_message':
+            return self.send_message(request['sender'], request['recipient'], request['content'])
+        elif action == 'read_messages':
+            return self.read_messages(request['username'], request.get('limit', 10))
+        elif action == 'delete_messages':
+            return self.delete_messages(request['username'], request['message_ids'])
+        elif action == 'delete_account':
+            return self.delete_account(request['username'], request['password'])
+        else:
+            return {'status': 'error', 'message': 'Invalid action'}
 
-    # Send success response with the deleted message ID
-    for msg_id in message_ids:
-        emit('message', Protocol.encode(Protocol.success_response({
-            "message": "Message deleted successfully",
-            "deleted_message_id": msg_id
-        })))
+    def create_account(self, username: str, password: str) -> dict:
+        with self.lock:
+            if username in self.accounts:
+                return {'status': 'error', 'message': 'Username already exists'}
+            
+            salt = bcrypt.gensalt()
+            password_hash = bcrypt.hashpw(password.encode('utf-8'), salt)
+            
+            self.accounts[username] = {
+                'password_hash': password_hash
+            }
+            self.messages[username] = {}
+            return {'status': 'success', 'message': 'Account created successfully'}
 
-def handle_delete_account(message):
-    username = active_sessions.get(request.sid)
-    if not username:
-        emit('message', Protocol.encode(Protocol.error_response("Not logged in")))
-        return
+    def login(self, username: str, password: str, client_socket: socket.socket) -> dict:
+        if username not in self.accounts:
+            return {'status': 'error', 'message': 'Username not found'}
+        
+        if not bcrypt.checkpw(password.encode('utf-8'), self.accounts[username]['password_hash']):
+            return {'status': 'error', 'message': 'Invalid password'}
+        
+        with self.lock:
+            self.active_sessions[username] = client_socket
+            unread_messages = [msg for msg in self.messages[username].values() if not msg['read']]
+            unread_count = len(unread_messages)
+            
+            return {
+                'status': 'success',
+                'message': f'Login successful. You have {unread_count} unread messages.',
+                'unread_count': unread_count,
+                'messages': list(self.messages[username].values())
+            }
 
-    # Delete all messages sent to this user
-    del messages[username]
-    
-    # Delete user's account
-    del users[username]
-    del active_sessions[request.sid]
+    def list_accounts(self, pattern: Optional[str] = None) -> dict:
+        accounts = list(self.accounts.keys())
+        if pattern:
+            accounts = [acc for acc in accounts if pattern.lower() in acc.lower()]
+        return {'status': 'success', 'accounts': accounts}
 
-    emit('message', Protocol.encode(Protocol.success_response({
-        "message": "Account deleted successfully"
-    })))
+    def send_message(self, sender: str, recipient: str, content: str) -> dict:
+        if recipient not in self.accounts:
+            return {'status': 'error', 'message': 'Recipient not found'}
+        
+        with self.lock:
+            msg_id = len(self.messages[recipient])
+            message = {
+                'id': msg_id,
+                'sender': sender,
+                'content': content,
+                'timestamp': datetime.now().isoformat(),
+                'read': False
+            }
+            
+            # Store message in recipient's message store
+            self.messages[recipient][msg_id] = message
+            
+            # If recipient is active, deliver immediately
+            if recipient in self.active_sessions:
+                try:
+                    notification = {
+                        'type': 'new_message',
+                        'message': message
+                    }
+                    self.active_sessions[recipient].send(json.dumps(notification).encode('utf-8'))
+                except:
+                    pass  # Handle failed delivery silently
+                    
+        return {'status': 'success', 'message': 'Message sent'}
 
-from ..config import load_config
+    def read_messages(self, username: str, sender: str = None) -> dict:
+        if username not in self.accounts:
+            return {'status': 'error', 'message': 'User not found'}
+        
+        with self.lock:
+            if sender:
+                # Mark messages from specific sender as read
+                for msg in self.messages[username].values():
+                    if msg['sender'] == sender:
+                        msg['read'] = True
+            
+            return {
+                'status': 'success',
+                'messages': list(self.messages[username].values())
+            }
+
+    def delete_messages(self, username: str, message_ids: List[int]) -> dict:
+        if username not in self.accounts:
+            return {'status': 'error', 'message': 'User not found'}
+        
+        with self.lock:
+            for msg_id in message_ids:
+                if msg_id in self.messages[username]:
+                    del self.messages[username][msg_id]
+            return {'status': 'success', 'message': 'Messages deleted'}
+
+    def delete_account(self, username: str, password: str) -> dict:
+        if username not in self.accounts:
+            return {'status': 'error', 'message': 'User not found'}
+        
+        if not bcrypt.checkpw(password.encode('utf-8'), self.accounts[username]['password_hash']):
+            return {'status': 'error', 'message': 'Invalid password'}
+        
+        with self.lock:
+            # Remove from active sessions if logged in
+            if username in self.active_sessions:
+                del self.active_sessions[username]
+            
+            # Delete account and all associated messages
+            del self.accounts[username]
+            return {'status': 'success', 'message': 'Account deleted successfully'}
 
 if __name__ == '__main__':
-    config = load_config('server')
-    socketio.run(app, host=config['host'], port=config['port'], debug=True)
+    server = ChatServer()
+    server.start()
