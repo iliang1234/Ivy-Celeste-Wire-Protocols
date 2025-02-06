@@ -54,9 +54,9 @@ class ChatServer:
         elif action == 'send_message':
             return self.send_message(request['sender'], request['recipient'], request['content'])
         elif action == 'read_messages':
-            return self.read_messages(request['username'], request.get('limit', 10))
+            return self.read_messages(request['username'], request.get('sender'))
         elif action == 'delete_messages':
-            return self.delete_messages(request['username'], request['message_ids'])
+            return self.delete_messages(request['username'], request['other_user'], request['message_ids'])
         elif action == 'delete_account':
             return self.delete_account(request['username'], request['password'])
         else:
@@ -140,7 +140,7 @@ class ChatServer:
                 except:
                     pass  # Handle failed delivery silently
                     
-        return {'status': 'success', 'message': 'Message sent'}
+        return {'status': 'success', 'message': 'Message sent', 'message_id': msg_id}
 
     def read_messages(self, username: str, sender: str = None) -> dict:
         if username not in self.accounts:

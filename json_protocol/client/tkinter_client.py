@@ -64,21 +64,35 @@ class ChatClient:
         self.logout_button = ttk.Button(self.users_frame, text="Logout", command=self.logout)
         self.logout_button.pack()
         
-        # Messages Area
-        self.messages_frame = ttk.Frame(self.chat_frame)
-        self.messages_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
         
-        self.messages_text = tk.Text(self.messages_frame, height=20, width=50, state=tk.DISABLED)
-        self.messages_text.pack(fill=tk.BOTH, expand=True)
+        # Create right side container
+        self.right_container = ttk.Frame(self.chat_frame)
+        self.right_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
         
-        # Create right-click menu
-        self.context_menu = tk.Menu(self.messages_text, tearoff=0)
-        self.context_menu.add_command(label="Delete Message", command=self.delete_selected_message)
-        self.messages_text.bind("<Button-3>", self.show_context_menu)
+        # Create message display frame
+        self.messages_frame = ttk.Frame(self.right_container)
+        self.messages_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(5,0))
         
-        # Message Input
-        self.input_frame = ttk.Frame(self.messages_frame)
-        self.input_frame.pack(fill=tk.X, pady=5)
+        # Create messages container with scrollbar
+        self.messages_canvas = tk.Canvas(self.messages_frame)
+        self.scrollbar = ttk.Scrollbar(self.messages_frame, orient="vertical", command=self.messages_canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.messages_canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.messages_canvas.configure(scrollregion=self.messages_canvas.bbox("all"))
+        )
+
+        self.messages_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.messages_canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.scrollbar.pack(side="right", fill="y")
+        self.messages_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Message Input at bottom
+        self.input_frame = ttk.Frame(self.right_container)
+        self.input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
         
         self.message_entry = ttk.Entry(self.input_frame)
         self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
@@ -214,21 +228,14 @@ class ChatClient:
         chat_key = tuple(sorted([sender, receiver]))
         if chat_key not in self.chat_histories:
             self.chat_histories[chat_key] = []
-        self.chat_histories[chat_key].append(message)
-        
-        # Store message ID for deletion
-        if msg_id is not None:
-            self.message_ids[message] = (msg_id, sender)
+        self.chat_histories[chat_key].append((message, msg_id, sender))
         
         # Only display if this conversation is currently selected
         if self.users_listbox.curselection():
             selected_user = self.users_listbox.get(self.users_listbox.curselection())
             current_chat_key = tuple(sorted([self.current_user, selected_user]))
             if chat_key == current_chat_key:
-                self.messages_text.configure(state=tk.NORMAL)
-                self.messages_text.insert(tk.END, message + "\n")
-                self.messages_text.see(tk.END)
-                self.messages_text.configure(state=tk.DISABLED)
+                self.add_message_to_display(message, msg_id, sender)
                 
     def on_user_select(self, event):
         if not self.users_listbox.curselection():
@@ -244,60 +251,66 @@ class ChatClient:
             'sender': selected_user
         })
         
-        # Clear and update message display
-        self.messages_text.configure(state=tk.NORMAL)
-        self.messages_text.delete(1.0, tk.END)
+        # Clear all widgets in scrollable frame
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
         
         # Display chat history for selected user
         if chat_key in self.chat_histories:
-            for message in self.chat_histories[chat_key]:
-                self.messages_text.insert(tk.END, message + "\n")
+            for message, msg_id, sender in self.chat_histories[chat_key]:
+                self.add_message_to_display(message, msg_id, sender)
         
-        self.messages_text.see(tk.END)
-        self.messages_text.configure(state=tk.DISABLED)
+        # Scroll to bottom
+        self.messages_canvas.yview_moveto(1.0)
         
-    def show_context_menu(self, event):
-        try:
-            # Get the index of the clicked position
-            index = self.messages_text.index(f"@{event.x},{event.y}")
-            # Get the line of text at that index
-            line_start = self.messages_text.index(f"{index} linestart")
-            line_end = self.messages_text.index(f"{index} lineend")
-            clicked_message = self.messages_text.get(line_start, line_end).strip()
+    def add_message_to_display(self, message: str, msg_id: int, sender: str):
+        # Create a frame for the message
+        msg_frame = ttk.Frame(self.scrollable_frame)
+        msg_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        # Add message text
+        msg_label = ttk.Label(msg_frame, text=message, wraplength=350)
+        msg_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Add delete button if message is from current user
+        if sender == self.current_user and msg_id is not None:
+            delete_btn = ttk.Button(
+                msg_frame,
+                text="Delete",
+                command=lambda: self.delete_message(msg_id)
+            )
+            delete_btn.pack(side=tk.RIGHT)
+        
+        # Scroll to bottom
+        self.messages_canvas.yview_moveto(1.0)
             
-            # Only show menu if message exists and belongs to current user
-            if clicked_message in self.message_ids:
-                msg_id, sender = self.message_ids[clicked_message]
-                if sender == self.current_user:
-                    self.selected_message = clicked_message
-                    self.context_menu.post(event.x_root, event.y_root)
-        except:
-            pass
+    def delete_message(self, msg_id: int):
+        if not self.users_listbox.curselection():
+            return
             
-    def delete_selected_message(self):
-        if hasattr(self, 'selected_message') and self.selected_message in self.message_ids:
-            msg_id, sender = self.message_ids[self.selected_message]
-            selected_user = self.users_listbox.get(self.users_listbox.curselection())
+        selected_user = self.users_listbox.get(self.users_listbox.curselection())
+        
+        # Send delete request to server
+        response = self.send_request({
+            'action': 'delete_messages',
+            'username': self.current_user,
+            'other_user': selected_user,
+            'message_ids': [msg_id]
+        })
+        
+        if response['status'] == 'success':
+            # Remove message from chat history
+            chat_key = tuple(sorted([self.current_user, selected_user]))
+            if chat_key in self.chat_histories:
+                self.chat_histories[chat_key] = [
+                    (msg, mid, sndr) for msg, mid, sndr in self.chat_histories[chat_key]
+                    if mid != msg_id
+                ]
             
-            # Send delete request to server
-            response = self.send_request({
-                'action': 'delete_messages',
-                'username': self.current_user,
-                'other_user': selected_user,
-                'message_ids': [msg_id]
-            })
-            
-            if response['status'] == 'success':
-                # Remove message from chat history
-                chat_key = tuple(sorted([self.current_user, selected_user]))
-                if chat_key in self.chat_histories:
-                    self.chat_histories[chat_key].remove(self.selected_message)
-                del self.message_ids[self.selected_message]
-                
-                # Refresh the display
-                self.on_user_select(None)
-            else:
-                messagebox.showerror("Error", response['message'])
+            # Refresh the display
+            self.on_user_select(None)
+        else:
+            messagebox.showerror("Error", response['message'])
     
     def start_message_listener(self):
         def listen_for_messages():
@@ -333,9 +346,9 @@ class ChatClient:
         if self.socket:
             self.socket.close()
             self.socket = None
-        self.messages_text.configure(state=tk.NORMAL)
-        self.messages_text.delete(1.0, tk.END)
-        self.messages_text.configure(state=tk.DISABLED)
+        # Clear all widgets in scrollable frame
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
         self.chat_histories = {}
         self.message_ids = {}
         self.users_listbox.delete(0, tk.END)
