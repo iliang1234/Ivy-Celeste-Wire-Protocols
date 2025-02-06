@@ -2,7 +2,7 @@ import json
 import socket
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from typing import Optional, Callable
 
 class ChatClient:
@@ -17,6 +17,7 @@ class ChatClient:
         self.current_user: Optional[str] = None
         self.message_listener: Optional[threading.Thread] = None
         self.running = True
+        self.unread_count = 0
         
         self.setup_gui()
         
@@ -55,14 +56,49 @@ class ChatClient:
         self.users_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
         
         ttk.Label(self.users_frame, text="Users:").pack()
-        self.users_listbox = tk.Listbox(self.users_frame, width=20)
-        self.users_listbox.pack(fill=tk.Y, expand=True)
-        self.users_listbox.bind('<<ListboxSelect>>', self.on_user_select)
-        self.refresh_users_button = ttk.Button(self.users_frame, text="Refresh", command=self.refresh_users)
-        self.refresh_users_button.pack(pady=(0, 5))
         
-        self.logout_button = ttk.Button(self.users_frame, text="Logout", command=self.logout)
-        self.logout_button.pack()
+        # Add search frame
+        self.search_frame = ttk.Frame(self.users_frame)
+        self.search_frame.pack(fill=tk.X, pady=(0, 5))
+        self.search_entry = ttk.Entry(self.search_frame)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.search_button = ttk.Button(self.search_frame, text="Search", command=self.search_users)
+        self.search_button.pack(side=tk.RIGHT)
+        
+        # Create users listbox with fixed height for 5 users
+        self.users_listbox = tk.Listbox(self.users_frame, width=20, height=5)
+        self.users_listbox.pack(fill=tk.X)
+        self.users_listbox.bind('<<ListboxSelect>>', self.on_user_select)
+        
+        # Add pagination frame
+        self.page_frame = ttk.Frame(self.users_frame)
+        self.page_frame.pack(fill=tk.X, pady=2)
+        
+        self.prev_button = ttk.Button(self.page_frame, text="←", width=3, command=self.prev_page)
+        self.prev_button.pack(side=tk.LEFT)
+        
+        self.page_label = ttk.Label(self.page_frame, text="Page 1")
+        self.page_label.pack(side=tk.LEFT, expand=True)
+        
+        self.next_button = ttk.Button(self.page_frame, text="→", width=3, command=self.next_page)
+        self.next_button.pack(side=tk.RIGHT)
+        
+        self.current_page = 1
+        self.users_per_page = 5
+        self.all_users = []
+        
+        self.refresh_users_button = ttk.Button(self.users_frame, text="Refresh", command=self.refresh_users)
+        self.refresh_users_button.pack(pady=(5, 0))
+        
+        # Create button frame for logout and delete account
+        self.button_frame = ttk.Frame(self.users_frame)
+        self.button_frame.pack(fill=tk.X, pady=5)
+        
+        self.logout_button = ttk.Button(self.button_frame, text="Logout", command=self.logout)
+        self.logout_button.pack(side=tk.LEFT, padx=2)
+        
+        self.delete_account_button = ttk.Button(self.button_frame, text="Delete Account", command=self.delete_account)
+        self.delete_account_button.pack(side=tk.RIGHT, padx=2)
         
 
         
@@ -143,19 +179,31 @@ class ChatClient:
         
         if response['status'] == 'success':
             self.current_user = username
-            self.show_chat_interface()
+            self.chat_histories = {}  # Clear any old chat histories
+            self.unread_count = response.get('unread_count', 0)
             
-            # Display all messages
+            # Process all messages
             if 'messages' in response and response['messages']:
                 for msg in response['messages']:
+                    chat_key = tuple(sorted([msg['sender'], msg['recipient']]))
+                    
+                    # Initialize chat history if needed
+                    if chat_key not in self.chat_histories:
+                        self.chat_histories[chat_key] = []
+                    
+                    # Format message text
                     if msg['sender'] == username:
-                        # This is a message we sent
                         message_text = f"You -> {msg['recipient']}: {msg['content']}"
                     else:
-                        # This is a message we received
                         message_text = f"{msg['sender']}: {msg['content']}"
-                    self.display_message(message_text, msg['sender'], msg['recipient'], msg['id'])
+                    
+                    # Add to chat history if not already there
+                    msg_exists = any(mid == msg['id'] for _, mid, _ in self.chat_histories[chat_key])
+                    if not msg_exists:
+                        self.chat_histories[chat_key].append((message_text, msg['id'], msg['sender']))
             
+            # Show chat interface and start listener
+            self.show_chat_interface()
             messagebox.showinfo("Success", response['message'])
             self.start_message_listener()
         else:
@@ -184,7 +232,7 @@ class ChatClient:
         self.login_frame.pack_forget()
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
         self.refresh_users()
-        self.root.title(f"Chat Application - {self.current_user}")
+        self.update_title()
         
     def refresh_users(self):
         response = self.send_request({
@@ -193,10 +241,25 @@ class ChatClient:
         })
         
         if response['status'] == 'success':
-            self.users_listbox.delete(0, tk.END)
-            for user in response['accounts']:
-                if user != self.current_user:
-                    self.users_listbox.insert(tk.END, user)
+            self.all_users = [user for user in response['accounts'] if user != self.current_user]
+            self.current_page = 1
+            self.update_user_list()
+                    
+    def search_users(self):
+        search_pattern = self.search_entry.get()
+        response = self.send_request({
+            'action': 'list_accounts',
+            'pattern': search_pattern
+        })
+        
+        if response['status'] == 'success':
+            self.all_users = [user for user in response['accounts'] if user != self.current_user]
+            
+            if not self.all_users:
+                messagebox.showinfo("Search Result", "No users found matching your search.")
+            
+            self.current_page = 1
+            self.update_user_list()
                     
     def send_message(self):
         if not self.users_listbox.curselection():
@@ -237,31 +300,58 @@ class ChatClient:
             if chat_key == current_chat_key:
                 self.add_message_to_display(message, msg_id, sender)
                 
-    def on_user_select(self, event):
+    def on_user_select(self, event=None):
         if not self.users_listbox.curselection():
             return
             
         selected_user = self.users_listbox.get(self.users_listbox.curselection())
         chat_key = tuple(sorted([self.current_user, selected_user]))
         
-        # Mark messages from this user as read
-        response = self.send_request({
-            'action': 'read_messages',
-            'username': self.current_user,
-            'sender': selected_user
-        })
-        
-        # Clear all widgets in scrollable frame
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-        
-        # Display chat history for selected user
-        if chat_key in self.chat_histories:
-            for message, msg_id, sender in self.chat_histories[chat_key]:
-                self.add_message_to_display(message, msg_id, sender)
-        
-        # Scroll to bottom
-        self.messages_canvas.yview_moveto(1.0)
+        try:
+            # Mark messages from this user as read and get chat history
+            response = self.send_request({
+                'action': 'read_messages',
+                'username': self.current_user,
+                'sender': selected_user
+            })
+            
+            if response and response.get('status') == 'success':
+                # Update chat history with messages
+                if chat_key not in self.chat_histories:
+                    self.chat_histories[chat_key] = []
+                
+                # Process new messages
+                for msg in response.get('messages', []):
+                    message_text = f"{msg['sender']}: {msg['content']}"
+                    if msg['sender'] == self.current_user:
+                        message_text = f"You -> {msg['recipient']}: {msg['content']}"
+                    
+                    # Add message if not already in history
+                    msg_exists = any(mid == msg['id'] for _, mid, _ in self.chat_histories[chat_key])
+                    if not msg_exists:
+                        self.chat_histories[chat_key].append((message_text, msg['id'], msg['sender']))
+                
+                # Update unread count
+                self.get_unread_count()
+            
+            # Clear display
+            for widget in self.scrollable_frame.winfo_children():
+                widget.destroy()
+            
+            # Show messages in order
+            if chat_key in self.chat_histories:
+                sorted_messages = sorted(self.chat_histories[chat_key], key=lambda x: x[1])
+                for message, msg_id, sender in sorted_messages:
+                    self.add_message_to_display(message, msg_id, sender)
+            
+            # Scroll to bottom
+            self.messages_canvas.yview_moveto(1.0)
+            
+        except Exception as e:
+            print(f"Error in on_user_select: {str(e)}")
+            # Clear display on error
+            for widget in self.scrollable_frame.winfo_children():
+                widget.destroy()
         
     def add_message_to_display(self, message: str, msg_id: int, sender: str):
         # Create a frame for the message
@@ -321,18 +411,39 @@ class ChatClient:
                         notification = json.loads(data)
                         if notification['type'] == 'new_message':
                             message = notification['message']
-                            self.display_message(
-                                f"{message['sender']}: {message['content']}",
-                                message['sender'],
-                                self.current_user,
-                                message['id']
-                            )
+                            # Increment unread count if we're the recipient and message is unread
+                            if message['recipient'] == self.current_user and not message['read']:
+                                self.unread_count += 1
+                                self.update_title()
+                            
+                            # Format message text
+                            if message['sender'] == self.current_user:
+                                msg_text = f"You -> {message['recipient']}: {message['content']}"
+                            else:
+                                msg_text = f"{message['sender']}: {message['content']}"
+                            
+                            self.display_message(msg_text, message['sender'], message['recipient'], message['id'])
+                            
                         elif notification['type'] == 'messages_deleted':
                             # Refresh the display if we're viewing the chat with the user who deleted messages
                             if self.users_listbox.curselection():
                                 selected_user = self.users_listbox.get(self.users_listbox.curselection())
                                 if selected_user == notification['from_user']:
                                     self.on_user_select(None)
+                                    
+                        elif notification['type'] == 'account_deleted':
+                            # Remove the deleted user from the listbox
+                            deleted_user = notification['username']
+                            for i in range(self.users_listbox.size()):
+                                if self.users_listbox.get(i) == deleted_user:
+                                    self.users_listbox.delete(i)
+                                    break
+                            # Clear chat if we were viewing the deleted user's messages
+                            if self.users_listbox.curselection():
+                                selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                                if selected_user == deleted_user:
+                                    for widget in self.scrollable_frame.winfo_children():
+                                        widget.destroy()
                 except:
                     break
                     
@@ -364,6 +475,77 @@ class ChatClient:
             self.socket.close()
         self.root.destroy()
         
+    def delete_account(self):
+        if not self.current_user:
+            return
+            
+        # Ask for confirmation
+        if not messagebox.askyesno("Confirm Delete", 
+            "Are you sure you want to delete your account? This will permanently delete all your messages and cannot be undone."):
+            return
+            
+        # Get password for verification
+        password = simpledialog.askstring("Password Required", 
+            "Please enter your password to confirm account deletion:", show='*')
+        if not password:
+            return
+            
+        # Send delete request to server
+        response = self.send_request({
+            'action': 'delete_account',
+            'username': self.current_user,
+            'password': password
+        })
+        
+        if response['status'] == 'success':
+            messagebox.showinfo("Success", response['message'])
+            self.logout()
+        else:
+            messagebox.showerror("Error", response['message'])
+    
+    def update_user_list(self):
+        self.users_listbox.delete(0, tk.END)
+        
+        start_idx = (self.current_page - 1) * self.users_per_page
+        end_idx = start_idx + self.users_per_page
+        page_users = self.all_users[start_idx:end_idx]
+        
+        for user in page_users:
+            self.users_listbox.insert(tk.END, user)
+        
+        total_pages = (len(self.all_users) + self.users_per_page - 1) // self.users_per_page
+        self.page_label.config(text=f"Page {self.current_page}/{max(1, total_pages)}")
+        
+        # Update button states
+        self.prev_button.config(state='normal' if self.current_page > 1 else 'disabled')
+        self.next_button.config(state='normal' if self.current_page < total_pages else 'disabled')
+    
+    def prev_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.update_user_list()
+    
+    def next_page(self):
+        total_pages = (len(self.all_users) + self.users_per_page - 1) // self.users_per_page
+        if self.current_page < total_pages:
+            self.current_page += 1
+            self.update_user_list()
+    
+    def update_title(self):
+        title = f"Chat Application - {self.current_user}"
+        if self.unread_count > 0:
+            title += f" ({self.unread_count} unread)"
+        self.root.title(title)
+        
+    def get_unread_count(self):
+        response = self.send_request({
+            'action': 'get_unread_count',
+            'username': self.current_user
+        })
+        if response['status'] == 'success':
+            self.unread_count = response['unread_count']
+            self.update_title()
+            
     def run(self):
         self.root.mainloop()
 

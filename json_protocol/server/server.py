@@ -59,6 +59,8 @@ class ChatServer:
             return self.delete_messages(request['username'], request['other_user'], request['message_ids'])
         elif action == 'delete_account':
             return self.delete_account(request['username'], request['password'])
+        elif action == 'get_unread_count':
+            return self.get_unread_count(request['username'])
         else:
             return {'status': 'error', 'message': 'Invalid action'}
 
@@ -86,14 +88,18 @@ class ChatServer:
         with self.lock:
             self.active_sessions[username] = client_socket
             
-            # Get all messages where user is either sender or recipient
-            all_messages = {}
-            for msg in self.messages[username].values():
-                if msg['sender'] == username or msg['recipient'] == username:
-                    all_messages[msg['id']] = msg
+            # Get all messages involving this user
+            all_messages = []
+            for user_messages in self.messages.values():
+                for msg in user_messages.values():
+                    if msg['sender'] == username or msg['recipient'] == username:
+                        all_messages.append(msg)
+            
+            # Sort messages by ID to maintain chronological order
+            all_messages.sort(key=lambda x: x['id'])
             
             # Count unread messages (only those received)
-            unread_messages = [msg for msg in all_messages.values() 
+            unread_messages = [msg for msg in all_messages 
                              if not msg['read'] and msg['recipient'] == username]
             unread_count = len(unread_messages)
             
@@ -101,9 +107,25 @@ class ChatServer:
                 'status': 'success',
                 'message': f'Login successful. You have {unread_count} unread messages.',
                 'unread_count': unread_count,
-                'messages': list(all_messages.values())
+                'messages': all_messages
             }
 
+    def get_unread_count(self, username: str) -> dict:
+        if username not in self.accounts:
+            return {'status': 'error', 'message': 'User not found'}
+            
+        with self.lock:
+            # Count unread messages where user is recipient
+            unread_count = sum(
+                1 for msg in self.messages[username].values()
+                if msg['recipient'] == username and not msg['read']
+            )
+            
+            return {
+                'status': 'success',
+                'unread_count': unread_count
+            }
+            
     def list_accounts(self, pattern: Optional[str] = None) -> dict:
         accounts = list(self.accounts.keys())
         if pattern:
@@ -126,8 +148,12 @@ class ChatServer:
             }
             
             # Store message for both sender and recipient
-            self.messages[recipient][msg_id] = message.copy()
-            self.messages[sender][msg_id] = message.copy()
+            recipient_msg = message.copy()
+            sender_msg = message.copy()
+            sender_msg['read'] = True  # Sender's copy is always read
+            
+            self.messages[recipient][msg_id] = recipient_msg
+            self.messages[sender][msg_id] = sender_msg
             
             # If recipient is active, deliver immediately
             if recipient in self.active_sessions:
@@ -147,15 +173,19 @@ class ChatServer:
             return {'status': 'error', 'message': 'User not found'}
         
         with self.lock:
+            # Get relevant messages (between username and sender)
+            relevant_messages = []
             if sender:
-                # Mark messages from specific sender as read
                 for msg in self.messages[username].values():
-                    if msg['sender'] == sender:
-                        msg['read'] = True
+                    if msg['sender'] == sender or msg['recipient'] == sender:
+                        # Mark as read if user is recipient
+                        if msg['recipient'] == username:
+                            msg['read'] = True
+                        relevant_messages.append(msg)
             
             return {
                 'status': 'success',
-                'messages': list(self.messages[username].values())
+                'messages': relevant_messages
             }
 
     def delete_messages(self, username: str, other_user: str, message_ids: List[int]) -> dict:
@@ -194,7 +224,48 @@ class ChatServer:
     def delete_account(self, username: str, password: str) -> dict:
         if username not in self.accounts:
             return {'status': 'error', 'message': 'User not found'}
+            
+        # Verify password
+        if not bcrypt.checkpw(password.encode('utf-8'), self.accounts[username]['password_hash']):
+            return {'status': 'error', 'message': 'Invalid password'}
         
+        with self.lock:
+            # Remove user's messages from other users' message stores
+            for other_user in list(self.messages.keys()):
+                if other_user != username:
+                    # Get messages to delete (where user is sender or recipient)
+                    to_delete = []
+                    for msg_id, msg in self.messages[other_user].items():
+                        if msg['sender'] == username or msg['recipient'] == username:
+                            to_delete.append(msg_id)
+                    
+                    # Delete the messages
+                    for msg_id in to_delete:
+                        del self.messages[other_user][msg_id]
+                        
+                    # Notify other user if they're online
+                    if other_user in self.active_sessions:
+                        try:
+                            notification = {
+                                'type': 'account_deleted',
+                                'username': username
+                            }
+                            self.active_sessions[other_user].send(json.dumps(notification).encode('utf-8'))
+                        except:
+                            pass  # Handle failed notification silently
+            
+            # Delete user's message store
+            if username in self.messages:
+                del self.messages[username]
+            
+            # Delete user's account
+            del self.accounts[username]
+            
+            # Remove from active sessions if logged in
+            if username in self.active_sessions:
+                del self.active_sessions[username]
+            
+            return {'status': 'success', 'message': 'Account deleted successfully'}
         if not bcrypt.checkpw(password.encode('utf-8'), self.accounts[username]['password_hash']):
             return {'status': 'error', 'message': 'Invalid password'}
         
