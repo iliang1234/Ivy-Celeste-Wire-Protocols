@@ -7,6 +7,8 @@ from typing import Optional, Callable
 
 class ChatClient:
     def __init__(self, host: str = 'localhost', port: int = 5001):
+        # Dictionary to store message IDs for deletion: {message_text: (msg_id, sender)}
+        self.message_ids = {}
         # Dictionary to store chat histories: {(sender, receiver): [messages]}
         self.chat_histories = {}
         self.host = host
@@ -69,6 +71,11 @@ class ChatClient:
         self.messages_text = tk.Text(self.messages_frame, height=20, width=50, state=tk.DISABLED)
         self.messages_text.pack(fill=tk.BOTH, expand=True)
         
+        # Create right-click menu
+        self.context_menu = tk.Menu(self.messages_text, tearoff=0)
+        self.context_menu.add_command(label="Delete Message", command=self.delete_selected_message)
+        self.messages_text.bind("<Button-3>", self.show_context_menu)
+        
         # Message Input
         self.input_frame = ttk.Frame(self.messages_frame)
         self.input_frame.pack(fill=tk.X, pady=5)
@@ -124,11 +131,16 @@ class ChatClient:
             self.current_user = username
             self.show_chat_interface()
             
-            # Display unread messages if any
+            # Display all messages
             if 'messages' in response and response['messages']:
                 for msg in response['messages']:
-                    message_text = f"{msg['sender']}: {msg['content']}"
-                    self.display_message(message_text, msg['sender'], username)
+                    if msg['sender'] == username:
+                        # This is a message we sent
+                        message_text = f"You -> {msg['recipient']}: {msg['content']}"
+                    else:
+                        # This is a message we received
+                        message_text = f"{msg['sender']}: {msg['content']}"
+                    self.display_message(message_text, msg['sender'], msg['recipient'], msg['id'])
             
             messagebox.showinfo("Success", response['message'])
             self.start_message_listener()
@@ -192,16 +204,21 @@ class ChatClient:
         
         if response['status'] == 'success':
             self.message_entry.delete(0, tk.END)
-            self.display_message(f"You -> {recipient}: {content}", self.current_user, recipient)
+            msg_text = f"You -> {recipient}: {content}"
+            self.display_message(msg_text, self.current_user, recipient, response.get('message_id'))
         else:
             messagebox.showerror("Error", response['message'])
             
-    def display_message(self, message: str, sender: str, receiver: str):
+    def display_message(self, message: str, sender: str, receiver: str, msg_id: int = None):
         # Store message in chat history
         chat_key = tuple(sorted([sender, receiver]))
         if chat_key not in self.chat_histories:
             self.chat_histories[chat_key] = []
         self.chat_histories[chat_key].append(message)
+        
+        # Store message ID for deletion
+        if msg_id is not None:
+            self.message_ids[message] = (msg_id, sender)
         
         # Only display if this conversation is currently selected
         if self.users_listbox.curselection():
@@ -239,6 +256,49 @@ class ChatClient:
         self.messages_text.see(tk.END)
         self.messages_text.configure(state=tk.DISABLED)
         
+    def show_context_menu(self, event):
+        try:
+            # Get the index of the clicked position
+            index = self.messages_text.index(f"@{event.x},{event.y}")
+            # Get the line of text at that index
+            line_start = self.messages_text.index(f"{index} linestart")
+            line_end = self.messages_text.index(f"{index} lineend")
+            clicked_message = self.messages_text.get(line_start, line_end).strip()
+            
+            # Only show menu if message exists and belongs to current user
+            if clicked_message in self.message_ids:
+                msg_id, sender = self.message_ids[clicked_message]
+                if sender == self.current_user:
+                    self.selected_message = clicked_message
+                    self.context_menu.post(event.x_root, event.y_root)
+        except:
+            pass
+            
+    def delete_selected_message(self):
+        if hasattr(self, 'selected_message') and self.selected_message in self.message_ids:
+            msg_id, sender = self.message_ids[self.selected_message]
+            selected_user = self.users_listbox.get(self.users_listbox.curselection())
+            
+            # Send delete request to server
+            response = self.send_request({
+                'action': 'delete_messages',
+                'username': self.current_user,
+                'other_user': selected_user,
+                'message_ids': [msg_id]
+            })
+            
+            if response['status'] == 'success':
+                # Remove message from chat history
+                chat_key = tuple(sorted([self.current_user, selected_user]))
+                if chat_key in self.chat_histories:
+                    self.chat_histories[chat_key].remove(self.selected_message)
+                del self.message_ids[self.selected_message]
+                
+                # Refresh the display
+                self.on_user_select(None)
+            else:
+                messagebox.showerror("Error", response['message'])
+    
     def start_message_listener(self):
         def listen_for_messages():
             while self.running and self.socket:
@@ -251,8 +311,15 @@ class ChatClient:
                             self.display_message(
                                 f"{message['sender']}: {message['content']}",
                                 message['sender'],
-                                self.current_user
+                                self.current_user,
+                                message['id']
                             )
+                        elif notification['type'] == 'messages_deleted':
+                            # Refresh the display if we're viewing the chat with the user who deleted messages
+                            if self.users_listbox.curselection():
+                                selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                                if selected_user == notification['from_user']:
+                                    self.on_user_select(None)
                 except:
                     break
                     
@@ -270,6 +337,7 @@ class ChatClient:
         self.messages_text.delete(1.0, tk.END)
         self.messages_text.configure(state=tk.DISABLED)
         self.chat_histories = {}
+        self.message_ids = {}
         self.users_listbox.delete(0, tk.END)
         self.chat_frame.pack_forget()
         self.login_frame.pack(fill=tk.X, pady=5)

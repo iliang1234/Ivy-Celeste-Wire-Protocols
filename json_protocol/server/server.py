@@ -85,14 +85,23 @@ class ChatServer:
         
         with self.lock:
             self.active_sessions[username] = client_socket
-            unread_messages = [msg for msg in self.messages[username].values() if not msg['read']]
+            
+            # Get all messages where user is either sender or recipient
+            all_messages = {}
+            for msg in self.messages[username].values():
+                if msg['sender'] == username or msg['recipient'] == username:
+                    all_messages[msg['id']] = msg
+            
+            # Count unread messages (only those received)
+            unread_messages = [msg for msg in all_messages.values() 
+                             if not msg['read'] and msg['recipient'] == username]
             unread_count = len(unread_messages)
             
             return {
                 'status': 'success',
                 'message': f'Login successful. You have {unread_count} unread messages.',
                 'unread_count': unread_count,
-                'messages': list(self.messages[username].values())
+                'messages': list(all_messages.values())
             }
 
     def list_accounts(self, pattern: Optional[str] = None) -> dict:
@@ -110,13 +119,15 @@ class ChatServer:
             message = {
                 'id': msg_id,
                 'sender': sender,
+                'recipient': recipient,
                 'content': content,
                 'timestamp': datetime.now().isoformat(),
                 'read': False
             }
             
-            # Store message in recipient's message store
-            self.messages[recipient][msg_id] = message
+            # Store message for both sender and recipient
+            self.messages[recipient][msg_id] = message.copy()
+            self.messages[sender][msg_id] = message.copy()
             
             # If recipient is active, deliver immediately
             if recipient in self.active_sessions:
@@ -147,14 +158,37 @@ class ChatServer:
                 'messages': list(self.messages[username].values())
             }
 
-    def delete_messages(self, username: str, message_ids: List[int]) -> dict:
-        if username not in self.accounts:
+    def delete_messages(self, username: str, other_user: str, message_ids: List[int]) -> dict:
+        if username not in self.accounts or other_user not in self.accounts:
             return {'status': 'error', 'message': 'User not found'}
         
         with self.lock:
+            # Delete messages from both users' message stores
             for msg_id in message_ids:
+                # Delete from sender's messages
                 if msg_id in self.messages[username]:
-                    del self.messages[username][msg_id]
+                    msg = self.messages[username][msg_id]
+                    if msg['sender'] == username and msg['recipient'] == other_user:
+                        del self.messages[username][msg_id]
+                        
+                # Delete from receiver's messages
+                if msg_id in self.messages[other_user]:
+                    msg = self.messages[other_user][msg_id]
+                    if msg['sender'] == username and msg['recipient'] == other_user:
+                        del self.messages[other_user][msg_id]
+            
+            # Notify other user if they're online
+            if other_user in self.active_sessions:
+                try:
+                    notification = {
+                        'type': 'messages_deleted',
+                        'deleted_ids': message_ids,
+                        'from_user': username
+                    }
+                    self.active_sessions[other_user].send(json.dumps(notification).encode('utf-8'))
+                except:
+                    pass  # Handle failed notification silently
+                    
             return {'status': 'success', 'message': 'Messages deleted'}
 
     def delete_account(self, username: str, password: str) -> dict:
