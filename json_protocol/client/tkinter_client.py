@@ -110,21 +110,67 @@ class ChatClient:
         self.messages_frame = ttk.Frame(self.right_container)
         self.messages_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=(5,0))
         
+        # Message controls frame at the top
+        self.message_controls = ttk.Frame(self.right_container)
+        self.message_controls.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
+        # Messages per page control
+        ttk.Label(self.message_controls, text="Messages per page:").pack(side=tk.LEFT, padx=(0, 5))
+        self.msg_per_page_var = tk.StringVar(value="10")
+        self.msg_per_page_entry = ttk.Entry(self.message_controls, textvariable=self.msg_per_page_var, width=5)
+        self.msg_per_page_entry.pack(side=tk.LEFT)
+        
+        # Add apply button for message count
+        self.apply_count_btn = ttk.Button(self.message_controls, text="Apply", 
+                                        command=self.update_message_count)
+        self.apply_count_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Navigation buttons
+        self.prev_msg_btn = ttk.Button(self.message_controls, text="↑", command=self.prev_messages, width=3)
+        self.prev_msg_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        self.next_msg_btn = ttk.Button(self.message_controls, text="↓", command=self.next_messages, width=3)
+        self.next_msg_btn.pack(side=tk.RIGHT)
+        
+        # Message page counter
+        self.msg_page_var = tk.StringVar(value="Page 1")
+        self.msg_page_label = ttk.Label(self.message_controls, textvariable=self.msg_page_var)
+        self.msg_page_label.pack(side=tk.RIGHT, padx=10)
+        
         # Create messages container with scrollbar
+        self.messages_frame = ttk.Frame(self.right_container)
+        self.messages_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        
+        # Add scrollbar
         self.messages_canvas = tk.Canvas(self.messages_frame)
         self.scrollbar = ttk.Scrollbar(self.messages_frame, orient="vertical", command=self.messages_canvas.yview)
+        
+        # Configure scrolling
         self.scrollable_frame = ttk.Frame(self.messages_canvas)
-
         self.scrollable_frame.bind(
             "<Configure>",
             lambda e: self.messages_canvas.configure(scrollregion=self.messages_canvas.bbox("all"))
         )
-
-        self.messages_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Create window in canvas for messages
+        self.messages_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw", width=self.messages_canvas.winfo_width())
         self.messages_canvas.configure(yscrollcommand=self.scrollbar.set)
-
-        self.scrollbar.pack(side="right", fill="y")
-        self.messages_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Pack scrollbar and canvas
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.messages_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Handle canvas resize
+        def on_canvas_configure(e):
+            self.messages_canvas.itemconfig(
+                self.messages_canvas.find_withtag("all")[0],
+                width=e.width
+            )
+        
+        self.messages_canvas.bind("<Configure>", on_canvas_configure)
+        
+        # Initialize message pagination variables
+        self.current_msg_page = 0
+        self.total_msg_pages = 0
         
         # Message Input at bottom
         self.input_frame = ttk.Frame(self.right_container)
@@ -156,12 +202,25 @@ class ChatClient:
                 return {'status': 'error', 'message': 'Not connected to server'}
                 
         try:
+            # Set timeout for operations
+            self.socket.settimeout(5.0)  # 5 second timeout
+            
+            # Send request
             self.socket.send(json.dumps(request).encode('utf-8'))
+            
+            # Get response
             response = self.socket.recv(4096).decode('utf-8')
+            
+            # Reset timeout
+            self.socket.settimeout(None)
+            
             return json.loads(response)
+        except socket.timeout:
+            return {'status': 'error', 'message': 'Server response timed out'}
+        except ConnectionError:
+            return {'status': 'error', 'message': 'Connection lost'}
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to communicate with server: {str(e)}")
-            return {'status': 'error', 'message': str(e)}
+            return {'status': 'error', 'message': f'Communication error: {str(e)}'}
             
     def login(self):
         username = self.username_entry.get()
@@ -261,44 +320,79 @@ class ChatClient:
             self.current_page = 1
             self.update_user_list()
                     
+    def update_message_count(self):
+        if self.users_listbox.curselection():
+            selected_user = self.users_listbox.get(self.users_listbox.curselection())
+            chat_key = tuple(sorted([self.current_user, selected_user]))
+            self.current_msg_page = 0  # Reset to first page
+            self.update_message_display(chat_key)
+    
     def send_message(self):
         if not self.users_listbox.curselection():
             messagebox.showerror("Error", "Please select a recipient")
             return
             
         recipient = self.users_listbox.get(self.users_listbox.curselection())
-        content = self.message_entry.get()
+        content = self.message_entry.get().strip()
         
         if not content:
             return
             
-        response = self.send_request({
-            'action': 'send_message',
-            'sender': self.current_user,
-            'recipient': recipient,
-            'content': content
-        })
-        
-        if response['status'] == 'success':
+        try:
+            # Clear input field immediately to prevent double-sending
             self.message_entry.delete(0, tk.END)
-            msg_text = f"You -> {recipient}: {content}"
-            self.display_message(msg_text, self.current_user, recipient, response.get('message_id'))
-        else:
-            messagebox.showerror("Error", response['message'])
+            
+            response = self.send_request({
+                'action': 'send_message',
+                'sender': self.current_user,
+                'recipient': recipient,
+                'content': content
+            })
+            
+            if response['status'] == 'success':
+                msg_text = f"You -> {recipient}: {content}"
+                self.display_message(msg_text, self.current_user, recipient, response.get('message_id'))
+            else:
+                messagebox.showerror("Error", response['message'])
+        except ConnectionError as e:
+            messagebox.showerror("Connection Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send message: {str(e)}")
             
     def display_message(self, message: str, sender: str, receiver: str, msg_id: int = None):
-        # Store message in chat history
-        chat_key = tuple(sorted([sender, receiver]))
-        if chat_key not in self.chat_histories:
-            self.chat_histories[chat_key] = []
-        self.chat_histories[chat_key].append((message, msg_id, sender))
-        
-        # Only display if this conversation is currently selected
-        if self.users_listbox.curselection():
-            selected_user = self.users_listbox.get(self.users_listbox.curselection())
-            current_chat_key = tuple(sorted([self.current_user, selected_user]))
-            if chat_key == current_chat_key:
-                self.add_message_to_display(message, msg_id, sender)
+        try:
+            # Store message in chat history
+            chat_key = tuple(sorted([sender, receiver]))
+            if chat_key not in self.chat_histories:
+                self.chat_histories[chat_key] = []
+            self.chat_histories[chat_key].append((message, msg_id, sender))
+            
+            # Only display if this conversation is currently selected
+            if self.users_listbox.curselection():
+                selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                current_chat_key = tuple(sorted([self.current_user, selected_user]))
+                if chat_key == current_chat_key:
+                    try:
+                        msgs_per_page = max(1, int(self.msg_per_page_var.get()))
+                    except ValueError:
+                        msgs_per_page = 10
+                        self.msg_per_page_var.set(str(msgs_per_page))
+                    
+                    total_msgs = len(self.chat_histories[chat_key])
+                    last_page = (total_msgs - 1) // msgs_per_page
+                    
+                    # For new messages, always show the last page
+                    if sender == self.current_user:
+                        self.current_msg_page = last_page
+                        self.update_message_display(chat_key)
+                        # Force scroll to bottom after a short delay to ensure message is rendered
+                        self.root.after(50, lambda: self.messages_canvas.yview_moveto(1.0))
+                    # For received messages, only update if we're on the last page
+                    elif self.current_msg_page == last_page:
+                        self.update_message_display(chat_key)
+                        self.root.after(50, lambda: self.messages_canvas.yview_moveto(1.0))
+        except Exception as e:
+            print(f"Error displaying message: {str(e)}")
                 
     def on_user_select(self, event=None):
         if not self.users_listbox.curselection():
@@ -333,19 +427,10 @@ class ChatClient:
                 
                 # Update unread count
                 self.get_unread_count()
-            
-            # Clear display
-            for widget in self.scrollable_frame.winfo_children():
-                widget.destroy()
-            
-            # Show messages in order
-            if chat_key in self.chat_histories:
-                sorted_messages = sorted(self.chat_histories[chat_key], key=lambda x: x[1])
-                for message, msg_id, sender in sorted_messages:
-                    self.add_message_to_display(message, msg_id, sender)
-            
-            # Scroll to bottom
-            self.messages_canvas.yview_moveto(1.0)
+                
+                # Reset to first page and update display
+                self.current_msg_page = 0
+                self.update_message_display(chat_key)
             
         except Exception as e:
             print(f"Error in on_user_select: {str(e)}")
@@ -353,26 +438,97 @@ class ChatClient:
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
         
+    def update_message_display(self, chat_key):
+        # Clear current display
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        if chat_key in self.chat_histories:
+            # Get all messages and sort by ID and timestamp
+            sorted_messages = sorted(self.chat_histories[chat_key], key=lambda x: (x[1] if x[1] is not None else float('inf')))
+            
+            try:
+                msgs_per_page = max(1, int(self.msg_per_page_var.get()))
+            except ValueError:
+                msgs_per_page = 10
+                self.msg_per_page_var.set(str(msgs_per_page))
+            
+            # Calculate total pages
+            self.total_msg_pages = (len(sorted_messages) + msgs_per_page - 1) // msgs_per_page
+            
+            # Ensure current page is valid
+            self.current_msg_page = min(max(0, self.current_msg_page), max(0, self.total_msg_pages - 1))
+            
+            # Calculate slice indices
+            start_idx = self.current_msg_page * msgs_per_page
+            end_idx = start_idx + msgs_per_page
+            
+            # Display messages for current page
+            for message, msg_id, sender in sorted_messages[start_idx:end_idx]:
+                self.add_message_to_display(message, msg_id, sender)
+            
+            # Update page counter
+            if self.total_msg_pages > 0:
+                self.msg_page_var.set(f"Page {self.current_msg_page + 1} of {self.total_msg_pages}")
+            else:
+                self.msg_page_var.set("No messages")
+            
+            # Update navigation buttons
+            self.prev_msg_btn["state"] = "normal" if self.current_msg_page > 0 else "disabled"
+            self.next_msg_btn["state"] = "normal" if self.current_msg_page < self.total_msg_pages - 1 else "disabled"
+            
+            # If this is the last page, scroll to bottom
+            if self.current_msg_page == self.total_msg_pages - 1:
+                self.scrollable_frame.update_idletasks()
+                self.messages_canvas.yview_moveto(1.0)
+    
+    def prev_messages(self):
+        if self.current_msg_page > 0:
+            self.current_msg_page -= 1
+            if self.users_listbox.curselection():
+                selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                chat_key = tuple(sorted([self.current_user, selected_user]))
+                self.update_message_display(chat_key)
+    
+    def next_messages(self):
+        if self.current_msg_page < self.total_msg_pages - 1:
+            self.current_msg_page += 1
+            if self.users_listbox.curselection():
+                selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                chat_key = tuple(sorted([self.current_user, selected_user]))
+                self.update_message_display(chat_key)
+    
     def add_message_to_display(self, message: str, msg_id: int, sender: str):
         # Create a frame for the message
         msg_frame = ttk.Frame(self.scrollable_frame)
         msg_frame.pack(fill=tk.X, padx=5, pady=2)
         
+        # Create message content frame
+        content_frame = ttk.Frame(msg_frame)
+        if sender == self.current_user:
+            content_frame.pack(side=tk.RIGHT)
+        else:
+            content_frame.pack(side=tk.LEFT)
+        
         # Add message text
-        msg_label = ttk.Label(msg_frame, text=message, wraplength=350)
-        msg_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        msg_label = ttk.Label(content_frame, text=message, wraplength=350)
+        msg_label.pack(side=tk.LEFT)
+        
+        # Store message ID with unique key (message ID + content)
+        msg_key = f"{msg_id}_{message}" if msg_id is not None else message
+        self.message_ids[msg_key] = (msg_id, sender)
         
         # Add delete button if message is from current user
         if sender == self.current_user and msg_id is not None:
-            delete_btn = ttk.Button(
-                msg_frame,
+            delete_button = ttk.Button(
+                content_frame,
                 text="Delete",
-                command=lambda: self.delete_message(msg_id)
+                command=lambda mid=msg_id: self.delete_message(mid)
             )
-            delete_btn.pack(side=tk.RIGHT)
+            delete_button.pack(side=tk.RIGHT, padx=(5, 0))
         
-        # Scroll to bottom
-        self.messages_canvas.yview_moveto(1.0)
+        # Update scrollable frame to show latest messages
+        self.scrollable_frame.update_idletasks()
             
     def delete_message(self, msg_id: int):
         if not self.users_listbox.curselection():
@@ -392,13 +548,20 @@ class ChatClient:
             # Remove message from chat history
             chat_key = tuple(sorted([self.current_user, selected_user]))
             if chat_key in self.chat_histories:
+                # Only remove the specific message with this ID
                 self.chat_histories[chat_key] = [
                     (msg, mid, sndr) for msg, mid, sndr in self.chat_histories[chat_key]
                     if mid != msg_id
                 ]
-            
-            # Refresh the display
-            self.on_user_select(None)
+                
+                # Clean up message_ids dictionary
+                keys_to_remove = [k for k, v in self.message_ids.items() 
+                                if v[0] == msg_id]
+                for k in keys_to_remove:
+                    del self.message_ids[k]
+                
+                # Update the display while maintaining scroll position
+                self.update_message_display(chat_key)
         else:
             messagebox.showerror("Error", response['message'])
     
