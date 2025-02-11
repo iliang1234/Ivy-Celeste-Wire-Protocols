@@ -15,6 +15,7 @@ class ChatServer:
         self.accounts: Dict[str, dict] = {}  # username -> {password_hash, messages}
         self.active_sessions: Dict[str, socket.socket] = {}  # username -> socket
         self.lock = threading.Lock()
+        self.next_msg_id = 0  # Global message ID counter
 
     def start(self):
         self.server_socket.bind((self.host, self.port))
@@ -137,7 +138,10 @@ class ChatServer:
             return {'status': 'error', 'message': 'Recipient not found'}
         
         with self.lock:
-            msg_id = len(self.messages[recipient])
+            # Get next global message ID
+            msg_id = self.next_msg_id
+            self.next_msg_id += 1
+            
             message = {
                 'id': msg_id,
                 'sender': sender,
@@ -164,7 +168,8 @@ class ChatServer:
                     }
                     self.active_sessions[recipient].send(json.dumps(notification).encode('utf-8'))
                 except:
-                    pass  # Handle failed delivery silently
+                    # Failed delivery
+                    pass  
                     
         return {'status': 'success', 'message': 'Message sent', 'message_id': msg_id}
 
@@ -195,16 +200,17 @@ class ChatServer:
         with self.lock:
             # Delete messages from both users' message stores
             for msg_id in message_ids:
-                # Delete from sender's messages
+                # Delete from both users' messages regardless of sender/recipient
                 if msg_id in self.messages[username]:
                     msg = self.messages[username][msg_id]
-                    if msg['sender'] == username and msg['recipient'] == other_user:
+                    if (msg['sender'] == username and msg['recipient'] == other_user) or \
+                       (msg['sender'] == other_user and msg['recipient'] == username):
                         del self.messages[username][msg_id]
                         
-                # Delete from receiver's messages
                 if msg_id in self.messages[other_user]:
                     msg = self.messages[other_user][msg_id]
-                    if msg['sender'] == username and msg['recipient'] == other_user:
+                    if (msg['sender'] == username and msg['recipient'] == other_user) or \
+                       (msg['sender'] == other_user and msg['recipient'] == username):
                         del self.messages[other_user][msg_id]
             
             # Notify other user if they're online
@@ -213,11 +219,12 @@ class ChatServer:
                     notification = {
                         'type': 'messages_deleted',
                         'deleted_ids': message_ids,
-                        'from_user': username
+                        'other_user': username  # The other user in the conversation
                     }
                     self.active_sessions[other_user].send(json.dumps(notification).encode('utf-8'))
                 except:
-                    pass  # Handle failed notification silently
+                    # Failed notification
+                    pass 
                     
             return {'status': 'success', 'message': 'Messages deleted'}
 
@@ -252,7 +259,7 @@ class ChatServer:
                             }
                             self.active_sessions[other_user].send(json.dumps(notification).encode('utf-8'))
                         except:
-                            pass  # Handle failed notification silently
+                            pass
             
             # Delete user's message store
             if username in self.messages:

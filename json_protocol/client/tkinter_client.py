@@ -189,8 +189,15 @@ class ChatClient:
         
     def connect(self) -> bool:
         try:
+            if self.socket:
+                try:
+                    self.socket.close()
+                except:
+                    pass
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
+            # Set initial timeout for notification listener
+            self.socket.settimeout(1.0)
             return True
         except Exception as e:
             messagebox.showerror("Connection Error", f"Could not connect to server: {str(e)}")
@@ -206,21 +213,66 @@ class ChatClient:
             self.socket.settimeout(5.0)  # 5 second timeout
             
             # Send request
-            self.socket.send(json.dumps(request).encode('utf-8'))
+            data = json.dumps(request).encode('utf-8')
+            self.socket.sendall(data)
             
             # Get response
-            response = self.socket.recv(4096).decode('utf-8')
+            response_data = b''
             
-            # Reset timeout
-            self.socket.settimeout(None)
+            while True:
+                chunk = self.socket.recv(4096)
+                if not chunk:
+                    raise ConnectionError("Server closed connection")
+                response_data += chunk
+                
+                try:
+                    # Try to decode and parse the accumulated data
+                    data = json.loads(response_data.decode('utf-8'))
+                    
+                    # Handle notifications by passing to notification handler
+                    if isinstance(data, dict):
+                        if 'type' in data:
+                            # This is a notification, process it and continue reading
+                            self.root.after(0, lambda: self.handle_notification(data))
+                            response_data = b''
+                            continue
+                        elif 'status' in data:
+                            # This is the response we're waiting for
+                            return data
+                        
+                except json.JSONDecodeError:
+                    # Incomplete JSON, keep reading
+                    continue
+                except socket.timeout:
+                    # If we've received some data but timed out, try to parse what we have
+                    if response_data:
+                        try:
+                            data = json.loads(response_data.decode('utf-8'))
+                            if isinstance(data, dict) and 'type' in data:
+                                notification = data
+                            else:
+                                response = data
+                            break
+                        except json.JSONDecodeError:
+                            pass
+                    return {'status': 'error', 'message': 'Server response timed out'}
             
-            return json.loads(response)
-        except socket.timeout:
-            return {'status': 'error', 'message': 'Server response timed out'}
+            # If we got a notification, handle it
+            if notification:
+                self.root.after(0, lambda: self.handle_notification(notification))
+            
+            if response is None:
+                return {'status': 'error', 'message': 'No response received'}
+                
+            return response
         except ConnectionError:
             return {'status': 'error', 'message': 'Connection lost'}
         except Exception as e:
             return {'status': 'error', 'message': f'Communication error: {str(e)}'}
+        finally:
+            # Reset timeout for notification listener
+            if self.socket:
+                self.socket.settimeout(1.0)
             
     def login(self):
         username = self.username_entry.get()
@@ -228,6 +280,24 @@ class ChatClient:
         
         if not username or not password:
             messagebox.showerror("Error", "Please enter both username and password")
+            return
+            
+        # Clear any existing connection
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+            
+        # Clear any existing message listener
+        if self.message_listener:
+            self.running = False
+            self.message_listener.join()
+            self.message_listener = None
+            
+        # Ensure we have a fresh connection
+        if not self.connect():
             return
             
         response = self.send_request({
@@ -238,33 +308,12 @@ class ChatClient:
         
         if response['status'] == 'success':
             self.current_user = username
-            self.chat_histories = {}  # Clear any old chat histories
+            self.chat_histories.clear()  # Clear any old chat histories
             self.unread_count = response.get('unread_count', 0)
-            
-            # Process all messages
-            if 'messages' in response and response['messages']:
-                for msg in response['messages']:
-                    chat_key = tuple(sorted([msg['sender'], msg['recipient']]))
-                    
-                    # Initialize chat history if needed
-                    if chat_key not in self.chat_histories:
-                        self.chat_histories[chat_key] = []
-                    
-                    # Format message text
-                    if msg['sender'] == username:
-                        message_text = f"You -> {msg['recipient']}: {msg['content']}"
-                    else:
-                        message_text = f"{msg['sender']}: {msg['content']}"
-                    
-                    # Add to chat history if not already there
-                    msg_exists = any(mid == msg['id'] for _, mid, _ in self.chat_histories[chat_key])
-                    if not msg_exists:
-                        self.chat_histories[chat_key].append((message_text, msg['id'], msg['sender']))
-            
-            # Show chat interface and start listener
             self.show_chat_interface()
-            messagebox.showinfo("Success", response['message'])
             self.start_message_listener()
+            # Update title immediately with unread count
+            self.update_title()
         else:
             messagebox.showerror("Error", response['message'])
             
@@ -288,21 +337,80 @@ class ChatClient:
             messagebox.showerror("Error", response['message'])
             
     def show_chat_interface(self):
+        # Clear any existing chat data
+        self.chat_histories.clear()
+        self.all_users.clear()
+        self.current_msg_page = 0
+        
+        # Clear message display
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+            
+        # Clear user list
+        self.users_listbox.delete(0, tk.END)
+        
         self.login_frame.pack_forget()
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Get all messages for this user
+        response = self.send_request({
+            'action': 'get_messages',
+            'username': self.current_user
+        })
+        
+        if response.get('status') == 'success' and response.get('messages'):
+            # Sort messages by timestamp
+            messages = sorted(response['messages'], key=lambda x: x.get('timestamp', ''))
+            
+            for msg in messages:
+                # Skip messages without required fields
+                if not all(key in msg for key in ['id', 'sender', 'recipient', 'content']):
+                    print(f"Message missing required fields: {msg}")
+                    continue
+                    
+                chat_key = tuple(sorted([msg['sender'], msg['recipient']]))
+                if chat_key not in self.chat_histories:
+                    self.chat_histories[chat_key] = []
+                    
+                # Format message text
+                sender = msg['sender']
+                content = msg['content']
+                if sender == self.current_user:
+                    msg_text = f"You -> {msg['recipient']}: {content}"
+                else:
+                    msg_text = f"{sender}: {content}"
+                    
+                # Only add message if we don't already have it
+                if not any(mid == msg['id'] for _, mid, _ in self.chat_histories[chat_key]):
+                    self.chat_histories[chat_key].append((msg_text, msg['id'], sender))
+        
         self.refresh_users()
         self.update_title()
         
     def refresh_users(self):
-        response = self.send_request({
-            'action': 'list_accounts',
-            'pattern': None
-        })
-        
-        if response['status'] == 'success':
-            self.all_users = [user for user in response['accounts'] if user != self.current_user]
-            self.current_page = 1
-            self.update_user_list()
+        try:
+            response = self.send_request({
+                'action': 'list_accounts',
+                'pattern': None
+            })
+            
+            if not isinstance(response, dict):
+                print(f"Invalid response format: {response}")
+                return
+                
+            if response.get('status') == 'success':
+                accounts = response.get('accounts', [])
+                if not isinstance(accounts, list):
+                    print(f"Invalid accounts format: {accounts}")
+                    return
+                    
+                self.all_users = [user for user in accounts if user != self.current_user]
+                self.current_page = 1
+                self.update_user_list()
+            else:
+                print(f"Failed to refresh users: {response.get('message', 'Unknown error')}")
+        except Exception as e:
+            print(f"Error refreshing users: {str(e)}")
                     
     def search_users(self):
         search_pattern = self.search_entry.get()
@@ -339,24 +447,32 @@ class ChatClient:
             return
             
         try:
-            # Clear input field immediately to prevent double-sending
+            # Save content and clear input field
+            msg_content = content
             self.message_entry.delete(0, tk.END)
             
+            # Send the message
             response = self.send_request({
                 'action': 'send_message',
                 'sender': self.current_user,
                 'recipient': recipient,
-                'content': content
+                'content': msg_content
             })
             
             if response['status'] == 'success':
-                msg_text = f"You -> {recipient}: {content}"
+                msg_text = f"You -> {recipient}: {msg_content}"
                 self.display_message(msg_text, self.current_user, recipient, response.get('message_id'))
             else:
+                # If failed, restore the message
+                self.message_entry.insert(0, msg_content)
                 messagebox.showerror("Error", response['message'])
         except ConnectionError as e:
+            # If failed, restore the message
+            self.message_entry.insert(0, msg_content)
             messagebox.showerror("Connection Error", str(e))
         except Exception as e:
+            # If failed, restore the message
+            self.message_entry.insert(0, msg_content)
             messagebox.showerror("Error", f"Failed to send message: {str(e)}")
             
     def display_message(self, message: str, sender: str, receiver: str, msg_id: int = None):
@@ -566,53 +682,241 @@ class ChatClient:
             messagebox.showerror("Error", response['message'])
     
     def start_message_listener(self):
+        # Stop any existing listener
+        if self.message_listener:
+            self.running = False
+            if self.socket:
+                try:
+                    self.socket.close()
+                except:
+                    pass
+            self.message_listener.join()
+            self.message_listener = None
+            self.socket = None
+        
+        # Reset state
+        self.running = True
+        
         def listen_for_messages():
             while self.running and self.socket:
                 try:
-                    data = self.socket.recv(4096).decode('utf-8')
-                    if data:
-                        notification = json.loads(data)
-                        if notification['type'] == 'new_message':
-                            message = notification['message']
-                            # Increment unread count if we're the recipient and message is unread
-                            if message['recipient'] == self.current_user and not message['read']:
-                                self.unread_count += 1
-                                self.update_title()
+                    # Set a timeout to allow checking running state
+                    self.socket.settimeout(1.0)
+                    try:
+                        data = self.socket.recv(4096).decode('utf-8')
+                        if not data:
+                            if self.running:
+                                # Connection closed by server
+                                print("Server closed connection")
+                            break
                             
-                            # Format message text
-                            if message['sender'] == self.current_user:
-                                msg_text = f"You -> {message['recipient']}: {message['content']}"
-                            else:
-                                msg_text = f"{message['sender']}: {message['content']}"
-                            
-                            self.display_message(msg_text, message['sender'], message['recipient'], message['id'])
-                            
-                        elif notification['type'] == 'messages_deleted':
-                            # Refresh the display if we're viewing the chat with the user who deleted messages
-                            if self.users_listbox.curselection():
-                                selected_user = self.users_listbox.get(self.users_listbox.curselection())
-                                if selected_user == notification['from_user']:
-                                    self.on_user_select(None)
-                                    
-                        elif notification['type'] == 'account_deleted':
-                            # Remove the deleted user from the listbox
-                            deleted_user = notification['username']
-                            for i in range(self.users_listbox.size()):
-                                if self.users_listbox.get(i) == deleted_user:
-                                    self.users_listbox.delete(i)
-                                    break
-                            # Clear chat if we were viewing the deleted user's messages
-                            if self.users_listbox.curselection():
-                                selected_user = self.users_listbox.get(self.users_listbox.curselection())
-                                if selected_user == deleted_user:
-                                    for widget in self.scrollable_frame.winfo_children():
-                                        widget.destroy()
-                except:
+                        try:
+                            notification = json.loads(data)
+                            if not isinstance(notification, dict):
+                                print(f"Invalid notification format: {data}")
+                                continue
+                                
+                            # Use root.after to handle GUI updates in main thread
+                            self.root.after(0, lambda n=notification: self.handle_notification(n))
+                        except json.JSONDecodeError:
+                            print(f"Invalid JSON received: {data}")
+                    except socket.timeout:
+                        # This is normal, just continue the loop
+                        continue
+                    except ConnectionError:
+                        if self.running:
+                            print("Connection lost")
+                        break
+                except Exception as e:
+                    if self.running:
+                        print(f"Error in message listener: {str(e)}")
                     break
+            
+            if self.running:
+                # Only try to reconnect if we didn't intentionally stop
+                print("Message listener stopped, attempting to reconnect...")
+                self.root.after(5000, self.reconnect)
                     
         self.message_listener = threading.Thread(target=listen_for_messages)
         self.message_listener.daemon = True
         self.message_listener.start()
+        print("Message listener started")
+        
+    def reconnect(self):
+        """Attempt to reconnect to the server"""
+        if not self.running:
+            return
+            
+        try:
+            if self.socket:
+                self.socket.close()
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.host, self.port))
+            
+            # Re-login with stored credentials
+            if self.current_user:
+                response = self.send_request({
+                    'action': 'login',
+                    'username': self.current_user,
+                    'password': self.password_entry.get()
+                })
+                
+                if response['status'] == 'success':
+                    print("Reconnected and logged back in")
+                    self.start_message_listener()
+                else:
+                    print("Failed to log back in after reconnect")
+                    self.logout()
+        except Exception as e:
+            print(f"Reconnection failed: {str(e)}")
+            # Try again in 5 seconds
+            self.root.after(5000, self.reconnect)
+        
+    def handle_notification(self, notification):
+        """Handle incoming notifications in the main thread"""
+        try:
+            if not isinstance(notification, dict):
+                print(f"Invalid notification format: {notification}")
+                return
+                
+            # If this is a response with messages, process them
+            if 'status' in notification and notification.get('status') == 'success':
+                if 'messages' in notification:
+                    for msg in notification['messages']:
+                        self.process_message(msg)
+                return
+                
+            notification_type = notification.get('type')
+            if not notification_type:
+                # Try to infer type from content
+                if any(key in notification for key in ['sender', 'recipient', 'content']):
+                    self.process_message(notification)
+                    return
+                else:
+                    print(f"Notification missing type: {notification}")
+                    return
+                    
+            if notification_type == 'new_message':
+                message = notification.get('message')
+                if message:
+                    self.process_message(message)
+            elif notification_type == 'messages_deleted':
+                deleted_ids = notification.get('deleted_ids', [])
+                other_user = notification.get('other_user')
+                if deleted_ids and other_user:
+                    chat_key = tuple(sorted([self.current_user, other_user]))
+                    if chat_key in self.chat_histories:
+                        # Remove deleted messages from chat history
+                        self.chat_histories[chat_key] = [
+                            (msg, mid, sndr) for msg, mid, sndr in self.chat_histories[chat_key]
+                            if mid not in deleted_ids
+                        ]
+                        # Update display if this chat is selected
+                        if self.users_listbox.curselection():
+                            selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                            if selected_user == other_user:
+                                self.update_message_display(chat_key)
+        except Exception as e:
+            print(f"Error handling notification: {e}")
+                    
+    def process_message(self, message):
+        try:
+            """Process a single message and add it to chat history"""
+            # Handle message deletion notifications
+            if isinstance(message, dict) and message.get('type') in ['message_deleted', 'messages_deleted']:
+                # Handle both singular and plural forms
+                msg_ids = []
+                
+                # Try all possible field names for message IDs
+                if 'message_ids' in message:
+                    msg_ids = message['message_ids']
+                elif 'deleted_ids' in message:
+                    msg_ids = message['deleted_ids']
+                elif 'message_id' in message:
+                    msg_ids = [message['message_id']]
+                
+                # Convert all IDs to integers
+                msg_ids = [int(mid) for mid in msg_ids if mid is not None]
+                
+                other_user = message.get('other_user')
+                if not other_user:
+                    other_user = message.get('from_user')  # Try alternate key
+                
+                if msg_ids and other_user:
+                    # Remove from chat history
+                    chat_key = tuple(sorted([self.current_user, other_user]))
+                    if chat_key in self.chat_histories:
+                        before_count = len(self.chat_histories[chat_key])
+                        self.chat_histories[chat_key] = [
+                            msg for msg in self.chat_histories[chat_key]
+                            if msg[1] not in msg_ids
+                        ]
+                        after_count = len(self.chat_histories[chat_key])
+                        
+                        if before_count != after_count:
+                            # Update display if this chat is currently open
+                            if self.users_listbox.curselection():
+                                selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                                if selected_user == other_user:
+                                    self.update_message_display(chat_key)
+                return
+            
+            # Handle regular messages
+            if not all(key in message for key in ['id', 'sender', 'recipient', 'content']):
+                print(f"Message missing required fields: {message}")
+                return
+                
+            chat_key = tuple(sorted([message['sender'], message['recipient']]))
+            if chat_key not in self.chat_histories:
+                self.chat_histories[chat_key] = []
+                
+            # Format message text
+            sender = message['sender']
+            content = message['content']
+            if sender == self.current_user:
+                msg_text = f"You -> {message['recipient']}: {content}"
+            else:
+                msg_text = f"{sender}: {content}"
+                
+            # Add to chat history if not already there
+            msg_exists = any(mid == message['id'] for _, mid, _ in self.chat_histories[chat_key])
+            if not msg_exists:
+                self.chat_histories[chat_key].append((msg_text, message['id'], sender))
+                self.update_message_display(chat_key)
+                
+                # Increment unread count if we're the recipient and message is unread
+                if message.get('recipient') == self.current_user and not message.get('read', True):
+                    self.unread_count += 1
+                    self.update_title()
+
+                    
+                elif notification_type == 'account_deleted':
+                    deleted_user = notification.get('username')
+                    if not deleted_user:
+                        print(f"Account deletion notification missing username: {notification}")
+                        return
+                        
+                    # Remove from users list
+                    for i in range(self.users_listbox.size()):
+                        if self.users_listbox.get(i) == deleted_user:
+                            self.users_listbox.delete(i)
+                            break
+                    # Clear chat if viewing deleted user
+                    if self.users_listbox.curselection():
+                        selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                        if selected_user == deleted_user:
+                            for widget in self.scrollable_frame.winfo_children():
+                                widget.destroy()
+                    # Remove from all_users list
+                    if deleted_user in self.all_users:
+                        self.all_users.remove(deleted_user)
+                        self.update_user_list()
+                else:
+                    print(f"Unknown notification type: {notification_type}")
+        except Exception as e:
+            print(f"Error handling notification: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
     def logout(self):
         self.current_user = None
@@ -652,19 +956,38 @@ class ChatClient:
             "Please enter your password to confirm account deletion:", show='*')
         if not password:
             return
-            
-        # Send delete request to server
-        response = self.send_request({
-            'action': 'delete_account',
-            'username': self.current_user,
-            'password': password
-        })
         
-        if response['status'] == 'success':
-            messagebox.showinfo("Success", response['message'])
+        try:
+            # Set a shorter timeout for delete_account
+            if self.socket:
+                self.socket.settimeout(3.0)  # 3 second timeout
+            
+            # Send delete request to server
+            response = self.send_request({
+                'action': 'delete_account',
+                'username': self.current_user,
+                'password': password
+            })
+            
+            if response['status'] == 'success':
+                messagebox.showinfo("Success", response['message'])
+                self.logout()
+            else:
+                messagebox.showerror("Error", response['message'])
+                
+        except socket.timeout:
+            messagebox.showerror("Error", "Server took too long to respond. Logging out for safety.")
             self.logout()
-        else:
-            messagebox.showerror("Error", response['message'])
+        except ConnectionError as e:
+            messagebox.showerror("Connection Error", str(e))
+            self.logout()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete account: {str(e)}")
+            self.logout()
+        finally:
+            # Reset timeout to default
+            if self.socket:
+                self.socket.settimeout(5.0)
     
     def update_user_list(self):
         self.users_listbox.delete(0, tk.END)
