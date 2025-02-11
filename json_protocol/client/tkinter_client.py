@@ -882,7 +882,12 @@ class ChatClient:
             msg_exists = any(mid == message['id'] for _, mid, _ in self.chat_histories[chat_key])
             if not msg_exists:
                 self.chat_histories[chat_key].append((msg_text, message['id'], sender))
-                self.update_message_display(chat_key)
+                
+                # Only update display if this chat is currently selected
+                if self.users_listbox.curselection():
+                    selected_user = self.users_listbox.get(self.users_listbox.curselection())
+                    if selected_user in chat_key:
+                        self.update_message_display(chat_key)
                 
                 # Increment unread count if we're the recipient and message is unread
                 if message.get('recipient') == self.current_user and not message.get('read', True):
