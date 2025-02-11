@@ -12,6 +12,30 @@ from unittest.mock import MagicMock, patch, PropertyMock
 # Add parent directory to path to import client and server modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+class TrackedSocket:
+    def __init__(self, sock):
+        self.sock = sock
+        self.bytes_sent = 0
+        self.bytes_received = 0
+        
+    def sendall(self, data):
+        self.bytes_sent += len(data)
+        return self.sock.sendall(data)
+        
+    def recv(self, bufsize):
+        data = self.sock.recv(bufsize)
+        self.bytes_received += len(data)
+        return data
+        
+    def connect(self, *args, **kwargs):
+        return self.sock.connect(*args, **kwargs)
+        
+    def close(self):
+        return self.sock.close()
+        
+    def get_total_bytes(self):
+        return self.bytes_sent + self.bytes_received
+
 from json_protocol.server.server import ChatServer
 from json_protocol.client.tkinter_client import ChatClient
 
@@ -41,10 +65,11 @@ class TestChatSystem(unittest.TestCase):
                 'username': username,
                 'password': password
             }
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock = TrackedSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
             sock.connect(('localhost', 5001))
             sock.sendall(json.dumps(request).encode('utf-8'))
             sock.recv(4096)  # Wait for response
+            print(f"\nSetup - Register {username}: {sock.get_total_bytes()} bytes transferred")
             sock.close()
 
     def tearDown(self):
@@ -63,11 +88,11 @@ class TestChatSystem(unittest.TestCase):
 
     def test_user_registration(self):
         """Test user registration functionality"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = TrackedSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         sock.connect(('localhost', 5001))
         
         # Register the socket connection
-        self.server.active_sessions[sock] = None
+        self.server.active_sessions[sock.sock] = None
         
         # Test successful registration
         request = {
@@ -78,11 +103,13 @@ class TestChatSystem(unittest.TestCase):
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
         self.assertEqual(response['status'], 'success')
+        print(f"\nSuccessful registration: {sock.get_total_bytes()} bytes transferred")
         
         # Test duplicate registration
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
         self.assertEqual(response['status'], 'error')
+        print(f"Duplicate registration: {sock.get_total_bytes()} bytes transferred")
         
         # Clean up
         request = {
@@ -92,11 +119,12 @@ class TestChatSystem(unittest.TestCase):
         }
         sock.sendall(json.dumps(request).encode('utf-8'))
         sock.recv(4096)  # Wait for response
+        print(f"Account deletion: {sock.get_total_bytes()} bytes transferred")
         sock.close()
 
     def test_user_login(self):
         """Test user login functionality"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = TrackedSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         sock.connect(('localhost', 5001))
         
         # Register the socket connection
@@ -124,11 +152,11 @@ class TestChatSystem(unittest.TestCase):
 
     def test_message_sending(self):
         """Test message sending functionality"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = TrackedSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         sock.connect(('localhost', 5001))
         
         # Register the socket connection
-        self.server.active_sessions[sock] = None
+        self.server.active_sessions[sock.sock] = None
         
         # Login first
         request = {
@@ -138,9 +166,10 @@ class TestChatSystem(unittest.TestCase):
         }
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
+        print(f"\nLogin: {sock.get_total_bytes()} bytes transferred")
         
         # Update connection with logged in user
-        self.server.active_sessions[sock] = 'user1'
+        self.server.active_sessions[sock.sock] = 'user1'
         
         # Send message
         request = {
@@ -152,6 +181,7 @@ class TestChatSystem(unittest.TestCase):
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
         self.assertEqual(response['status'], 'success')
+        print(f"Send message: {sock.get_total_bytes()} bytes transferred")
         
         # Read messages to verify
         request = {
@@ -161,6 +191,7 @@ class TestChatSystem(unittest.TestCase):
         }
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
+        print(f"Read messages: {sock.get_total_bytes()} bytes transferred")
         
         # Verify message was stored
         self.assertTrue(any(
@@ -172,11 +203,11 @@ class TestChatSystem(unittest.TestCase):
 
     def test_message_deletion(self):
         """Test message deletion functionality"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = TrackedSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         sock.connect(('localhost', 5001))
         
         # Register the socket connection
-        self.server.active_sessions[sock] = None
+        self.server.active_sessions[sock.sock] = None
         
         # Login and send a message first
         request = {
@@ -186,9 +217,10 @@ class TestChatSystem(unittest.TestCase):
         }
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
+        print(f"\nLogin: {sock.get_total_bytes()} bytes transferred")
         
         # Update connection with logged in user
-        self.server.active_sessions[sock] = 'user1'
+        self.server.active_sessions[sock.sock] = 'user1'
         
         request = {
             'action': 'send_message',
@@ -199,6 +231,7 @@ class TestChatSystem(unittest.TestCase):
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
         msg_id = response.get('message_id')
+        print(f"Send message: {sock.get_total_bytes()} bytes transferred")
         
         # Delete message
         request = {
@@ -210,6 +243,7 @@ class TestChatSystem(unittest.TestCase):
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
         self.assertEqual(response['status'], 'success')
+        print(f"Delete message: {sock.get_total_bytes()} bytes transferred")
         
         # Read messages to verify deletion
         request = {
@@ -219,6 +253,7 @@ class TestChatSystem(unittest.TestCase):
         }
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
+        print(f"Verify deletion: {sock.get_total_bytes()} bytes transferred")
         
         # Verify message was deleted
         self.assertFalse(any(
@@ -230,7 +265,7 @@ class TestChatSystem(unittest.TestCase):
 
     def test_user_list(self):
         """Test user list functionality"""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = TrackedSocket(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         sock.connect(('localhost', 5001))
         
         # Login first
@@ -241,6 +276,7 @@ class TestChatSystem(unittest.TestCase):
         }
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
+        print(f"\nLogin: {sock.get_total_bytes()} bytes transferred")
         
         # Get user list
         request = {
@@ -250,6 +286,7 @@ class TestChatSystem(unittest.TestCase):
         sock.sendall(json.dumps(request).encode('utf-8'))
         response = json.loads(sock.recv(4096).decode('utf-8'))
         self.assertEqual(response['status'], 'success')
+        print(f"List accounts: {sock.get_total_bytes()} bytes transferred")
         
         # Verify all test users are in the list
         user_list = response.get('accounts', [])
