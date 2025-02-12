@@ -2,6 +2,7 @@ import json
 import socket
 import threading
 import tkinter as tk
+import argparse
 from tkinter import ttk, messagebox, simpledialog
 from typing import Optional, Callable
 
@@ -1041,5 +1042,13 @@ class ChatClient:
         self.root.mainloop()
 
 if __name__ == '__main__':
-    client = ChatClient()
+    parser = argparse.ArgumentParser(description='Start the chat client')
+    parser.add_argument('--host', default='localhost',
+                        help='Server host address to connect to (default: localhost)')
+    parser.add_argument('--port', type=int, default=5001,
+                        help='Server port to connect to (default: 5001)')
+    args = parser.parse_args()
+    
+    client = ChatClient(host=args.host, port=args.port)
+    print(f"Connecting to server at {args.host}:{args.port}")
     client.run()

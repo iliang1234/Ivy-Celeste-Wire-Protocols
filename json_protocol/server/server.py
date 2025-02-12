@@ -4,6 +4,7 @@ import threading
 import bcrypt
 from datetime import datetime
 from typing import Dict, List, Optional
+import argparse
 
 class ChatServer:
     def __init__(self, host: str = 'localhost', port: int = 5001):
@@ -286,5 +287,13 @@ class ChatServer:
             return {'status': 'success', 'message': 'Account deleted successfully'}
 
 if __name__ == '__main__':
-    server = ChatServer()
+    parser = argparse.ArgumentParser(description='Start the chat server')
+    parser.add_argument('--host', default='localhost',
+                        help='Host address to bind to (default: localhost)')
+    parser.add_argument('--port', type=int, default=5001,
+                        help='Port to bind to (default: 5001)')
+    args = parser.parse_args()
+    
+    server = ChatServer(host=args.host, port=args.port)
+    print(f"Server starting on {args.host}:{args.port}")
     server.start()
