@@ -17,6 +17,7 @@ class MessageType(IntEnum):
     SEND_MESSAGE = 5
     READ_MESSAGES = 6
     DELETE_MESSAGES = 7
+    DELETE_MESSAGE = DELETE_MESSAGES
     
     # Responses
     SUCCESS = 8
@@ -25,6 +26,9 @@ class MessageType(IntEnum):
     # Real-time notifications
     NEW_MESSAGE_NOTIFICATION = 10
     MESSAGE_DELETED_NOTIFICATION = 11
+    DELETE_MESSAGE_NOTIFICATION = MESSAGE_DELETED_NOTIFICATION
+
+    ACCOUNT_DELETED_NOTIFICATION = 12
 
     @classmethod
     def _missing_(cls, value):
@@ -137,6 +141,49 @@ class WireProtocol:
         except Exception as e:
             raise ValueError(f"Failed to create send message request: {str(e)}")
     
+    @staticmethod
+    def delete_account_request(username: str, password: str) -> bytes:
+        """Create a delete account request"""
+        username_bytes = username.encode('utf-8')
+        password_bytes = password.encode('utf-8')
+        payload_length = len(username_bytes) + len(password_bytes) + 8  # 4 bytes for each length
+        
+        header = WireProtocol.pack_header(MessageType.DELETE_ACCOUNT, payload_length, 2)
+        payload = struct.pack('!I', len(username_bytes)) + username_bytes + \
+                 struct.pack('!I', len(password_bytes)) + password_bytes
+                 
+        return header + payload
+        
+    # @staticmethod
+    # def delete_message_request(sender: str, recipient: str, message_id: int) -> bytes:
+    #     """Create a delete message request"""
+    #     sender_bytes = sender.encode('utf-8')
+    #     recipient_bytes = recipient.encode('utf-8')
+    #     payload_length = len(sender_bytes) + len(recipient_bytes) + 12  # 4 bytes each for lengths and message_id
+        
+    #     header = WireProtocol.pack_header(MessageType.DELETE_MESSAGES, payload_length, 3)
+    #     payload = struct.pack('!I', len(sender_bytes)) + sender_bytes + \
+    #              struct.pack('!I', len(recipient_bytes)) + recipient_bytes + \
+    #              struct.pack('!I', message_id)
+                 
+    #     return header + payload
+
+    @staticmethod
+    def delete_message_request(username: str, message_id: int) -> bytes:
+        """Create a delete message request"""
+        username_bytes = username.encode('utf-8')
+        # The payload consists of:
+        #   - a 4-byte length for the username,
+        #   - the username bytes,
+        #   - and a 4-byte message_id.
+        payload_length = 4 + len(username_bytes) + 4  # 4 bytes for length, username_bytes, 4 bytes for message_id
+
+        # Note: Make sure the MessageType matches what the server expects.
+        header = WireProtocol.pack_header(MessageType.DELETE_MESSAGE, payload_length, 2)
+        payload = struct.pack('!I', len(username_bytes)) + username_bytes + struct.pack('!I', message_id)
+                    
+        return header + payload
+
     @staticmethod
     def success_response(message: str, data: Optional[bytes] = None) -> bytes:
         """Create a success response"""
