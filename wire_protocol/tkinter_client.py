@@ -7,9 +7,11 @@ from protocol import WireProtocol, MessageType
 import struct
 from datetime import datetime
 import time
+import os
+import argparse
 
 class ChatClient:
-    def __init__(self, host: str = 'localhost', port: int = 5001):  
+    def __init__(self, host: str = '127.0.0.1', port: int = 65432):  
         self.host = host
         self.port = port
         self.socket = None
@@ -660,6 +662,13 @@ class ChatClient:
             messagebox.showerror("Error", error_msg)
 
 
-if __name__ == '__main__':
-    client = ChatClient()
+if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Start the chat client.")
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"), help="Server hostname or IP")
+    parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", 65432)), help="Port number")
+    args = parser.parse_args()
+
+    # Create and start the client
+    client = ChatClient(host=args.host, port=args.port)
     client.run()

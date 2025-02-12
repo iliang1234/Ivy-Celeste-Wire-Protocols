@@ -6,19 +6,23 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from protocol import WireProtocol, MessageType
 import time
+import os
+import argparse
 
 class ChatServer:
-    def __init__(self, host: str = 'localhost', port: int = 5001):
+    def __init__(self, host: str = '0.0.0.0', port: int = 65432):
         self.messages: Dict[str, Dict[int, dict]] = {}  # username -> {msg_id: message_data}
-        self.host = host
-        self.port = port
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.accounts: Dict[str, dict] = {}  # username -> {password_hash}
         self.active_sessions: Dict[str, socket.socket] = {}  # username -> socket
         self.lock = threading.Lock()
         self.next_message_id = 0
         self.running = True
+        self.host = host
+        self.port = port
+        
+        # Initialize server socket
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     def start(self):
         self.server_socket.bind((self.host, self.port))
@@ -402,6 +406,14 @@ class ChatServer:
         except Exception as e:
             print(f"Error stopping server: {str(e)}")
 
-if __name__ == '__main__':
-    server = ChatServer()
+if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Start the chat server.")
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "0.0.0.0"), help="Server hostname or IP")
+    parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", 65432)), help="Port number")
+    args = parser.parse_args()
+
+    # Create and start the server
+    server = ChatServer(host=args.host, port=args.port)
+    print(f"Server started on {args.host}:{args.port}")
     server.start()
