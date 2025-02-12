@@ -2,17 +2,19 @@ import json
 import socket
 import threading
 import bcrypt
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import argparse
 
 class ChatServer:
-    def __init__(self, host: str = 'localhost', port: int = 5001):
+    def __init__(self, host: str = '0.0.0.0', port: int = 65432):
         # Store messages with their read status: {username: {msg_id: {message_data}}}
         self.messages = {}
         self.host = host
         self.port = port
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.accounts: Dict[str, dict] = {}  # username -> {password_hash, messages}
         self.active_sessions: Dict[str, socket.socket] = {}  # username -> socket
         self.lock = threading.Lock()
@@ -286,14 +288,14 @@ class ChatServer:
             del self.accounts[username]
             return {'status': 'success', 'message': 'Account deleted successfully'}
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Start the chat server')
-    parser.add_argument('--host', default='localhost',
-                        help='Host address to bind to (default: localhost)')
-    parser.add_argument('--port', type=int, default=5001,
-                        help='Port to bind to (default: 5001)')
+if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Start the chat server.")
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "0.0.0.0"), help="Server hostname or IP")
+    parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", 65432)), help="Port number")
     args = parser.parse_args()
-    
+
+    # Create and start the server
     server = ChatServer(host=args.host, port=args.port)
-    print(f"Server starting on {args.host}:{args.port}")
+    print(f"Server started on {args.host}:{args.port}")
     server.start()

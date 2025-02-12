@@ -3,11 +3,12 @@ import socket
 import threading
 import tkinter as tk
 import argparse
+import os
 from tkinter import ttk, messagebox, simpledialog
 from typing import Optional, Callable
 
 class ChatClient:
-    def __init__(self, host: str = 'localhost', port: int = 5001):
+    def __init__(self, host: str = '127.0.0.1', port: int = 65432):
         # Dictionary to store message IDs for deletion: {message_text: (msg_id, sender)}
         self.message_ids = {}
         # Dictionary to store chat histories: {(sender, receiver): [messages]}
@@ -1041,14 +1042,14 @@ class ChatClient:
     def run(self):
         self.root.mainloop()
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Start the chat client')
-    parser.add_argument('--host', default='localhost',
-                        help='Server host address to connect to (default: localhost)')
-    parser.add_argument('--port', type=int, default=5001,
-                        help='Server port to connect to (default: 5001)')
+if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Start the chat client.")
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"), help="Server hostname or IP")
+    parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", 65432)), help="Port number")
     args = parser.parse_args()
-    
+
+    # Create and start the client
     client = ChatClient(host=args.host, port=args.port)
     print(f"Connecting to server at {args.host}:{args.port}")
     client.run()
