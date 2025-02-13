@@ -47,12 +47,17 @@ pip install -r requirements.txt
 
 1. Start the server:
 ```bash
-python3 json_protocol/server/server.py
+python3 json_protocol/server/server.py --host \[host IP address\] --port \[port number\]
 ```
 
-2. In a new terminal, start the client:
+2. In a new terminal, you may start the client on the local device:
 ```bash
 python3 json_protocol/client/tkinter_client.py
+```
+
+3. In a new terminal, you may start the client on a different device:
+```bash
+python3 -OO -X faulthandler tkinter_client.py --host \[host IP address\] --port \[port number\]
 ```
 
 ## Usage
@@ -142,7 +147,3 @@ The application uses JSON for all client-server communication. Message formats:
      ```bash
      brew install python-tk@3.13
      ```
-
-## Contributing
-
-Feel free to submit issues and enhancement requests!
