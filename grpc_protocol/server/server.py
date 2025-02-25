@@ -135,6 +135,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 timestamp=datetime.now().isoformat(),
                 read=False
             )
+
+            print(f"Sending message ID: {msg_id} from {request.sender} to {request.recipient}")  # Debug
             
             # Ensure message dictionaries exist for both users
             if request.recipient not in self.messages:
@@ -198,23 +200,24 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     if msg_id in user_messages:
                         msg = user_messages[msg_id]
                         if msg.sender == request.username:
-                            # Delete message from both sender and recipient
-                            del self.messages[msg.sender][msg_id]
-                            if msg.recipient in self.messages and msg_id in self.messages[msg.recipient]:
-                                del self.messages[msg.recipient][msg_id]
-                            deleted = True
-                            
-                            # Create deletion notification
+                            # Update message content instead of deleting
                             deletion_notification = chat_pb2.ChatMessage(
                                 id=msg_id,
                                 sender=msg.sender,
                                 recipient=msg.recipient,
                                 content="<message deleted>",
-                                timestamp=datetime.now().isoformat(),
+                                timestamp=msg.timestamp,  # Keep original timestamp
                                 read=True
                             )
                             
-                            # Enqueue deletion notification to active sessions for both users
+                            # Update message for both sender and recipient
+                            self.messages[msg.sender][msg_id] = deletion_notification
+                            if msg.recipient in self.messages and msg_id in self.messages[msg.recipient]:
+                                self.messages[msg.recipient][msg_id] = deletion_notification
+                            
+                            deleted = True
+                            
+                            # Notify active sessions for both users
                             for username in [msg.sender, msg.recipient]:
                                 if username in self.active_sessions:
                                     for q in self.active_sessions[username]:
@@ -222,10 +225,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                                             q.put(deletion_notification)
                                         except Exception:
                                             pass
-            return chat_pb2.StatusResponse(
-                success=deleted,
-                message='Messages deleted' if deleted else 'No messages found to delete'
-            )
+                
+        return chat_pb2.StatusResponse(
+            success=deleted,
+            message='Messages deleted' if deleted else 'No messages found to delete'
+        )
 
     def GetUnreadCount(self, request, context):
         if request.username not in self.accounts:

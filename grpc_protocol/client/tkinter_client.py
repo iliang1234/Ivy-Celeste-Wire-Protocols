@@ -199,7 +199,6 @@ class ChatClient:
             self.chat_histories[key] = []
 
         # Check for deletion notification.
-        # In the new server code, deletion notifications have content "<message deleted>"
         if message.content == "<message deleted>" and message.id:
             # Remove message from local history
             original_len = len(self.chat_histories[key])
@@ -213,7 +212,7 @@ class ChatClient:
 
         # Otherwise, process as a new (or replacement) message.
         temp_msg_index = next((i for i, msg in enumerate(self.chat_histories[key]) 
-                               if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
+                            if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
         if temp_msg_index >= 0:
             self.chat_histories[key][temp_msg_index] = message
             current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
@@ -530,17 +529,23 @@ class ChatClient:
             if not self.grpc_client.delete_messages(self.current_user, [message.id]):
                 messagebox.showerror("Error", "Failed to delete message")
                 return
+            
+            # Remove the message from the chat history
             key = tuple(sorted([message.sender, message.recipient]))
             if key in self.chat_histories:
                 self.chat_histories[key] = [msg for msg in self.chat_histories[key] if msg.id != message.id]
+            
+            # Refresh the message display
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
+            
             current_recipient = self.receiver_entry.get()
             if current_recipient:
                 chat_key = tuple(sorted([self.current_user, current_recipient]))
                 if chat_key in self.chat_histories:
                     for msg in sorted(self.chat_histories[chat_key], key=lambda x: x.id):
                         self.handle_message(msg)
+            
             self.refresh_messages()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete message: {str(e)}")
