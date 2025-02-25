@@ -1,6 +1,6 @@
-# JSON Wire Protocol Chat Application
+# gRPC Protocol Chat Application
 
-A simple client-server chat application using JSON as the wire protocol. This application allows users to create accounts, send messages, and communicate in real-time with other users.
+A simple client-server chat application using gRPC as the wire protocol. This application allows users to create accounts, send messages, and communicate in real-time with other users.
 
 ## Features
 
@@ -82,68 +82,31 @@ python3 -OO -X faulthandler tkinter_client.py --host \[host IP address\] --port 
    - Click "Logout" to sign out
    - Messages are stored when recipients are offline
 
-## Protocol Specification
-
-The application uses JSON for all client-server communication. Message formats:
-
-1. Account Creation:
-```json
-{
-    "action": "create_account",
-    "username": "string",
-    "password": "string"
-}
+## Testing
+Run the command
+```bash
+cd grpc_protocol
+python -m unittest test_grpc_protocol.py
 ```
 
-2. Login:
-```json
-{
-    "action": "login",
-    "username": "string",
-    "password": "string"
-}
-```
-
-3. Messaging:
-```json
-{
-    "action": "send_message",
-    "sender": "string",
-    "recipient": "string",
-    "content": "string"
-}
-```
-
-## Architecture
-
-- Server (`server.py`)
-  - Handles multiple client connections using threading
-  - Manages user accounts and message storage
-  - Implements the JSON wire protocol
-
-- Client (`tkinter_client.py`)
-  - Provides GUI using Tkinter
-  - Handles real-time message updates
-  - Implements the client-side protocol
-
-## Security Features
-
-- Passwords are hashed using bcrypt
-- Messages are stored securely on the server
-- No plaintext password transmission
-
-## Troubleshooting
-
-1. Port Already in Use
-   - The server uses port 5001 by default
-   - If the port is in use, modify the port number in both server.py and tkinter_client.py
-
-2. Connection Issues
-   - Ensure the server is running before starting clients
-   - Check that the host and port match in both server and client
-
-3. Tkinter Issues
-   - On macOS, ensure you have python-tk installed:
+### Debugging Testing Errors
+TypeError: Couldn't build proto file into descriptor pool: duplicate symbol 'chat.CreateAccountRequest'
+   - This error occurs when the protocol buffer files are modified and re-generated.
+   - Ensure you are in the grpc_protocol/protos directory.
+   - Remove existing chat_pb2.py and chat_pb2_grpc.py files:
+      ```bash
+      rm -f chat_pb2.py chat_pb2_grpc.py
+      ```
+   - Recompile the .proto file correctly:
      ```bash
-     brew install python-tk@3.13
+     python -m grpc_tools.protoc -I . --python_out=. --grpc_python_out=. chat.proto
      ```
+   - After running the above command, check if the files chat_pb2.py and chat_pb2_grpc.py exist:
+     ```bash
+     ls -l chat_pb2.py chat_pb2_grpc.py
+     ```
+   - Rerun tests (cd out of proto directory):
+   ```bash
+   python -m unittest test_grpc_protocol.py
+   ```
+     
