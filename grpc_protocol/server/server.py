@@ -7,6 +7,7 @@ import argparse
 import os
 import sys
 import time
+import queue
 
 # Add the parent directory to the Python path so we can import the generated code
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +19,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def __init__(self):
         self.messages = {}  # username -> {msg_id: message}
         self.accounts = {}  # username -> {password_hash}
-        self.active_sessions = {}  # username -> list of message streams
+        # active_sessions now maps username to a list of per-stream queues
+        self.active_sessions = {}  # username -> list of Queue instances
         self.lock = threading.Lock()
         self.next_msg_id = 0
 
@@ -50,7 +52,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 message='Username not found'
             )
         
-        if not bcrypt.checkpw(request.password.encode('utf-8'), 
+        if not bcrypt.checkpw(request.password.encode('utf-8'),
                             self.accounts[request.username]['password_hash']):
             return chat_pb2.LoginResponse(
                 success=False,
@@ -86,7 +88,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 message='User not found'
             )
         
-        if not bcrypt.checkpw(request.password.encode('utf-8'), 
+        if not bcrypt.checkpw(request.password.encode('utf-8'),
                             self.accounts[request.username]['password_hash']):
             return chat_pb2.StatusResponse(
                 success=False,
@@ -143,14 +145,16 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             # Store message for both sender and recipient
             self.messages[request.recipient][msg_id] = message
             self.messages[request.sender][msg_id] = message
-            
-            # Send the actual message to all active sessions
-            for username, contexts in self.active_sessions.items():
-                for context in contexts:
-                    try:
-                        context.write(message)
-                    except:
-                        pass
+
+            # Enqueue the new message to all active sessions for sender and recipient
+            recipients = {request.sender, request.recipient}
+            for username in recipients:
+                if username in self.active_sessions:
+                    for q in self.active_sessions[username]:
+                        try:
+                            q.put(message)
+                        except Exception:
+                            pass
             
             return chat_pb2.SendMessageResponse(
                 success=True,
@@ -188,7 +192,6 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             )
         
         with self.lock:
-            # Find messages to delete
             deleted = False
             for msg_id in request.message_ids:
                 for username, user_messages in self.messages.items():
@@ -201,7 +204,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                                 del self.messages[msg.recipient][msg_id]
                             deleted = True
                             
-                            # Notify active sessions about deletion
+                            # Create deletion notification
                             deletion_notification = chat_pb2.ChatMessage(
                                 id=msg_id,
                                 sender=msg.sender,
@@ -211,15 +214,14 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                                 read=True
                             )
                             
-                            # Send notification to all active sessions
-                            for username, contexts in self.active_sessions.items():
-                                if username in [msg.sender, msg.recipient]:
-                                    for context in contexts:
+                            # Enqueue deletion notification to active sessions for both users
+                            for username in [msg.sender, msg.recipient]:
+                                if username in self.active_sessions:
+                                    for q in self.active_sessions[username]:
                                         try:
-                                            context.write(deletion_notification)
-                                        except:
+                                            q.put(deletion_notification)
+                                        except Exception:
                                             pass
-            
             return chat_pb2.StatusResponse(
                 success=deleted,
                 message='Messages deleted' if deleted else 'No messages found to delete'
@@ -234,46 +236,44 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 1 for msg in self.messages[request.username].values()
                 if msg.recipient == request.username and not msg.read
             )
-            
             return chat_pb2.UnreadCountResponse(unread_count=unread_count)
 
     def StreamMessages(self, request, context):
         if request.username not in self.accounts:
             return
         
-        # Add the stream context to active sessions
+        # Create a dedicated queue for this stream
+        local_queue = queue.Queue()
         with self.lock:
             if request.username not in self.active_sessions:
                 self.active_sessions[request.username] = []
-            self.active_sessions[request.username].append(context)
+            self.active_sessions[request.username].append(local_queue)
             
-            # Send all existing messages for this user
+            # Collect all existing messages for this user
             messages = []
             for user_messages in self.messages.values():
                 for msg in user_messages.values():
                     if msg.sender == request.username or msg.recipient == request.username:
                         messages.append(msg)
-            
-            # Sort messages by ID
             messages.sort(key=lambda x: x.id)
-            
-            # Send existing messages
-            for msg in messages:
-                try:
-                    context.write(msg)
-                except:
-                    pass
+        
+        # First, yield all existing messages
+        for msg in messages:
+            yield msg
         
         try:
-            # Keep the stream alive
+            # Now continuously yield new messages from the local queue
             while context.is_active():
-                # Sleep to prevent busy waiting
-                time.sleep(0.1)
+                try:
+                    msg = local_queue.get(timeout=0.1)
+                    yield msg
+                except queue.Empty:
+                    continue
         finally:
-            # Remove the stream when the client disconnects
+            # Cleanup: remove the local queue from active sessions when done
             with self.lock:
-                if request.username in self.active_sessions:
-                    self.active_sessions[request.username].remove(context)
+                if request.username in self.active_sessions and local_queue in self.active_sessions[request.username]:
+                    self.active_sessions[request.username].remove(local_queue)
                     if not self.active_sessions[request.username]:
                         del self.active_sessions[request.username]
 
