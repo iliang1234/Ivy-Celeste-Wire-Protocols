@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from protos import chat_pb2 as protos_dot_chat__pb2
+import chat_pb2 as chat__pb2
 
 GRPC_GENERATED_VERSION = '1.70.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in protos/chat_pb2_grpc.py depends on'
+        + f' but the generated code in chat_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -36,48 +36,48 @@ class ChatServiceStub(object):
         """
         self.CreateAccount = channel.unary_unary(
                 '/chat.ChatService/CreateAccount',
-                request_serializer=protos_dot_chat__pb2.CreateAccountRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.StatusResponse.FromString,
+                request_serializer=chat__pb2.CreateAccountRequest.SerializeToString,
+                response_deserializer=chat__pb2.StatusResponse.FromString,
                 _registered_method=True)
         self.Login = channel.unary_unary(
                 '/chat.ChatService/Login',
-                request_serializer=protos_dot_chat__pb2.LoginRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.LoginResponse.FromString,
+                request_serializer=chat__pb2.LoginRequest.SerializeToString,
+                response_deserializer=chat__pb2.LoginResponse.FromString,
                 _registered_method=True)
         self.DeleteAccount = channel.unary_unary(
                 '/chat.ChatService/DeleteAccount',
-                request_serializer=protos_dot_chat__pb2.DeleteAccountRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.StatusResponse.FromString,
+                request_serializer=chat__pb2.DeleteAccountRequest.SerializeToString,
+                response_deserializer=chat__pb2.StatusResponse.FromString,
                 _registered_method=True)
         self.ListAccounts = channel.unary_unary(
                 '/chat.ChatService/ListAccounts',
-                request_serializer=protos_dot_chat__pb2.ListAccountsRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.ListAccountsResponse.FromString,
+                request_serializer=chat__pb2.ListAccountsRequest.SerializeToString,
+                response_deserializer=chat__pb2.ListAccountsResponse.FromString,
                 _registered_method=True)
         self.SendMessage = channel.unary_unary(
                 '/chat.ChatService/SendMessage',
-                request_serializer=protos_dot_chat__pb2.SendMessageRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.SendMessageResponse.FromString,
+                request_serializer=chat__pb2.SendMessageRequest.SerializeToString,
+                response_deserializer=chat__pb2.SendMessageResponse.FromString,
                 _registered_method=True)
         self.ReadMessages = channel.unary_unary(
                 '/chat.ChatService/ReadMessages',
-                request_serializer=protos_dot_chat__pb2.ReadMessagesRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.ReadMessagesResponse.FromString,
+                request_serializer=chat__pb2.ReadMessagesRequest.SerializeToString,
+                response_deserializer=chat__pb2.ReadMessagesResponse.FromString,
                 _registered_method=True)
         self.DeleteMessages = channel.unary_unary(
                 '/chat.ChatService/DeleteMessages',
-                request_serializer=protos_dot_chat__pb2.DeleteMessagesRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.StatusResponse.FromString,
+                request_serializer=chat__pb2.DeleteMessagesRequest.SerializeToString,
+                response_deserializer=chat__pb2.StatusResponse.FromString,
                 _registered_method=True)
         self.GetUnreadCount = channel.unary_unary(
                 '/chat.ChatService/GetUnreadCount',
-                request_serializer=protos_dot_chat__pb2.UnreadCountRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.UnreadCountResponse.FromString,
+                request_serializer=chat__pb2.UnreadCountRequest.SerializeToString,
+                response_deserializer=chat__pb2.UnreadCountResponse.FromString,
                 _registered_method=True)
         self.StreamMessages = channel.unary_stream(
                 '/chat.ChatService/StreamMessages',
-                request_serializer=protos_dot_chat__pb2.StreamMessagesRequest.SerializeToString,
-                response_deserializer=protos_dot_chat__pb2.ChatMessage.FromString,
+                request_serializer=chat__pb2.StreamMessagesRequest.SerializeToString,
+                response_deserializer=chat__pb2.ChatMessage.FromString,
                 _registered_method=True)
 
 
@@ -145,48 +145,48 @@ def add_ChatServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'CreateAccount': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateAccount,
-                    request_deserializer=protos_dot_chat__pb2.CreateAccountRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.StatusResponse.SerializeToString,
+                    request_deserializer=chat__pb2.CreateAccountRequest.FromString,
+                    response_serializer=chat__pb2.StatusResponse.SerializeToString,
             ),
             'Login': grpc.unary_unary_rpc_method_handler(
                     servicer.Login,
-                    request_deserializer=protos_dot_chat__pb2.LoginRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.LoginResponse.SerializeToString,
+                    request_deserializer=chat__pb2.LoginRequest.FromString,
+                    response_serializer=chat__pb2.LoginResponse.SerializeToString,
             ),
             'DeleteAccount': grpc.unary_unary_rpc_method_handler(
                     servicer.DeleteAccount,
-                    request_deserializer=protos_dot_chat__pb2.DeleteAccountRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.StatusResponse.SerializeToString,
+                    request_deserializer=chat__pb2.DeleteAccountRequest.FromString,
+                    response_serializer=chat__pb2.StatusResponse.SerializeToString,
             ),
             'ListAccounts': grpc.unary_unary_rpc_method_handler(
                     servicer.ListAccounts,
-                    request_deserializer=protos_dot_chat__pb2.ListAccountsRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.ListAccountsResponse.SerializeToString,
+                    request_deserializer=chat__pb2.ListAccountsRequest.FromString,
+                    response_serializer=chat__pb2.ListAccountsResponse.SerializeToString,
             ),
             'SendMessage': grpc.unary_unary_rpc_method_handler(
                     servicer.SendMessage,
-                    request_deserializer=protos_dot_chat__pb2.SendMessageRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.SendMessageResponse.SerializeToString,
+                    request_deserializer=chat__pb2.SendMessageRequest.FromString,
+                    response_serializer=chat__pb2.SendMessageResponse.SerializeToString,
             ),
             'ReadMessages': grpc.unary_unary_rpc_method_handler(
                     servicer.ReadMessages,
-                    request_deserializer=protos_dot_chat__pb2.ReadMessagesRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.ReadMessagesResponse.SerializeToString,
+                    request_deserializer=chat__pb2.ReadMessagesRequest.FromString,
+                    response_serializer=chat__pb2.ReadMessagesResponse.SerializeToString,
             ),
             'DeleteMessages': grpc.unary_unary_rpc_method_handler(
                     servicer.DeleteMessages,
-                    request_deserializer=protos_dot_chat__pb2.DeleteMessagesRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.StatusResponse.SerializeToString,
+                    request_deserializer=chat__pb2.DeleteMessagesRequest.FromString,
+                    response_serializer=chat__pb2.StatusResponse.SerializeToString,
             ),
             'GetUnreadCount': grpc.unary_unary_rpc_method_handler(
                     servicer.GetUnreadCount,
-                    request_deserializer=protos_dot_chat__pb2.UnreadCountRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.UnreadCountResponse.SerializeToString,
+                    request_deserializer=chat__pb2.UnreadCountRequest.FromString,
+                    response_serializer=chat__pb2.UnreadCountResponse.SerializeToString,
             ),
             'StreamMessages': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamMessages,
-                    request_deserializer=protos_dot_chat__pb2.StreamMessagesRequest.FromString,
-                    response_serializer=protos_dot_chat__pb2.ChatMessage.SerializeToString,
+                    request_deserializer=chat__pb2.StreamMessagesRequest.FromString,
+                    response_serializer=chat__pb2.ChatMessage.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -214,8 +214,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/CreateAccount',
-            protos_dot_chat__pb2.CreateAccountRequest.SerializeToString,
-            protos_dot_chat__pb2.StatusResponse.FromString,
+            chat__pb2.CreateAccountRequest.SerializeToString,
+            chat__pb2.StatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -241,8 +241,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/Login',
-            protos_dot_chat__pb2.LoginRequest.SerializeToString,
-            protos_dot_chat__pb2.LoginResponse.FromString,
+            chat__pb2.LoginRequest.SerializeToString,
+            chat__pb2.LoginResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -268,8 +268,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/DeleteAccount',
-            protos_dot_chat__pb2.DeleteAccountRequest.SerializeToString,
-            protos_dot_chat__pb2.StatusResponse.FromString,
+            chat__pb2.DeleteAccountRequest.SerializeToString,
+            chat__pb2.StatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -295,8 +295,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/ListAccounts',
-            protos_dot_chat__pb2.ListAccountsRequest.SerializeToString,
-            protos_dot_chat__pb2.ListAccountsResponse.FromString,
+            chat__pb2.ListAccountsRequest.SerializeToString,
+            chat__pb2.ListAccountsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -322,8 +322,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/SendMessage',
-            protos_dot_chat__pb2.SendMessageRequest.SerializeToString,
-            protos_dot_chat__pb2.SendMessageResponse.FromString,
+            chat__pb2.SendMessageRequest.SerializeToString,
+            chat__pb2.SendMessageResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -349,8 +349,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/ReadMessages',
-            protos_dot_chat__pb2.ReadMessagesRequest.SerializeToString,
-            protos_dot_chat__pb2.ReadMessagesResponse.FromString,
+            chat__pb2.ReadMessagesRequest.SerializeToString,
+            chat__pb2.ReadMessagesResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -376,8 +376,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/DeleteMessages',
-            protos_dot_chat__pb2.DeleteMessagesRequest.SerializeToString,
-            protos_dot_chat__pb2.StatusResponse.FromString,
+            chat__pb2.DeleteMessagesRequest.SerializeToString,
+            chat__pb2.StatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -403,8 +403,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/GetUnreadCount',
-            protos_dot_chat__pb2.UnreadCountRequest.SerializeToString,
-            protos_dot_chat__pb2.UnreadCountResponse.FromString,
+            chat__pb2.UnreadCountRequest.SerializeToString,
+            chat__pb2.UnreadCountResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -430,8 +430,8 @@ class ChatService(object):
             request,
             target,
             '/chat.ChatService/StreamMessages',
-            protos_dot_chat__pb2.StreamMessagesRequest.SerializeToString,
-            protos_dot_chat__pb2.ChatMessage.FromString,
+            chat__pb2.StreamMessagesRequest.SerializeToString,
+            chat__pb2.ChatMessage.FromString,
             options,
             channel_credentials,
             insecure,
