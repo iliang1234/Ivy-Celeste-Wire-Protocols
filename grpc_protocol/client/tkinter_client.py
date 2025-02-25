@@ -18,7 +18,7 @@ from protos import chat_pb2
 from protos import chat_pb2_grpc
 
 class GRPCClient:
-    def __init__(self, host: str = '127.0.0.1', port: int = 65432):
+    def __init__(self, host: str = 'localhost', port: int = 65432):
         self.host = host
         self.port = port
         self.channel = None
@@ -200,7 +200,7 @@ class ChatClient:
 
         # Check for deletion notification.
         # In the new server code, deletion notifications have content "<message deleted>"
-        if message.content == "<message deleted>" and message.id:
+        if message.content == "<message deleted>" and message.id is not None:
             # Remove message from local history
             original_len = len(self.chat_histories[key])
             self.chat_histories[key] = [msg for msg in self.chat_histories[key] if msg.id != message.id]
@@ -664,4 +664,5 @@ if __name__ == "__main__":
                       help="Server port")
     args = parser.parse_args()
     client = ChatClient(args.host, args.port)
+    print(f"Connecting to server at {args.host}:{args.port}")
     client.run()
