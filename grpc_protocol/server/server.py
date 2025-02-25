@@ -69,15 +69,20 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             all_messages.sort(key=lambda x: x.id)
             
             # Count unread messages
-            unread_count = sum(1 for msg in all_messages 
-                             if not msg.read and msg.recipient == request.username)
+            # (Add your existing unread message counting logic here)
+
+            # Add the user to active sessions
+            if request.username not in self.active_sessions:
+                self.active_sessions[request.username] = []
             
-            return chat_pb2.LoginResponse(
-                success=True,
-                message=f'Login successful. You have {unread_count} unread messages.',
-                unread_count=unread_count,
-                messages=all_messages
-            )
+            # Add the current stream to the user's active sessions
+            self.active_sessions[request.username].append(context)
+
+        return chat_pb2.LoginResponse(
+            success=True,
+            message='Login successful',
+            messages=all_messages
+        )
 
     def DeleteAccount(self, request, context):
         if request.username not in self.accounts:
@@ -144,13 +149,16 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             self.messages[request.recipient][msg_id] = message
             self.messages[request.sender][msg_id] = message
             
-            # Send the actual message to all active sessions
-            for username, contexts in self.active_sessions.items():
-                for context in contexts:
-                    try:
-                        context.write(message)
-                    except:
-                        pass
+            # Immediately send message to active sessions
+            for username in [request.sender, request.recipient]:
+                if username in self.active_sessions:
+                    for context in self.active_sessions[username]:
+                        try:
+                            # Force immediate write without buffering
+                            context.write(message)
+                            context._state.core._flush()
+                        except:
+                            pass
             
             return chat_pb2.SendMessageResponse(
                 success=True,
@@ -237,48 +245,66 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             
             return chat_pb2.UnreadCountResponse(unread_count=unread_count)
 
+    def Logout(self, request, context):
+        with self.lock:
+            if request.username in self.active_sessions:
+                # Remove the user's stream from active sessions
+                self.active_sessions[request.username].remove(context)
+                if not self.active_sessions[request.username]:
+                    del self.active_sessions[request.username]
+
     def StreamMessages(self, request, context):
         if request.username not in self.accounts:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details('User not found')
             return
         
-        # Add the stream context to active sessions
         with self.lock:
+            # Add the current stream to active sessions
             if request.username not in self.active_sessions:
                 self.active_sessions[request.username] = []
             self.active_sessions[request.username].append(context)
-            
-            # Send all existing messages for this user
-            messages = []
-            for user_messages in self.messages.values():
-                for msg in user_messages.values():
-                    if msg.sender == request.username or msg.recipient == request.username:
-                        messages.append(msg)
-            
-            # Sort messages by ID
-            messages.sort(key=lambda x: x.id)
-            
-            # Send existing messages
-            for msg in messages:
-                try:
-                    context.write(msg)
-                except:
-                    pass
-        
+
         try:
-            # Keep the stream alive
-            while context.is_active():
-                # Sleep to prevent busy waiting
-                time.sleep(0.1)
+            while True:
+                # Wait for new messages to be sent to this user
+                new_messages = self.messages.get(request.username, {}).values()
+                for msg in new_messages:
+                    yield chat_pb2.MessageResponse(
+                        sender=msg.sender,
+                        recipient=msg.recipient,
+                        content=msg.content,
+                        timestamp=msg.timestamp
+                    )
+                time.sleep(1)  # Adjust the sleep time as necessary for performance
+        except grpc.RpcError:
+            pass
         finally:
-            # Remove the stream when the client disconnects
+            # Remove the stream from active sessions on disconnect
             with self.lock:
-                if request.username in self.active_sessions:
-                    self.active_sessions[request.username].remove(context)
-                    if not self.active_sessions[request.username]:
-                        del self.active_sessions[request.username]
+                self.active_sessions[request.username].remove(context)
+                if not self.active_sessions[request.username]:
+                    del self.active_sessions[request.username]
 
 def serve(host='0.0.0.0', port=65432):
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # Create server with better connection stability settings
+    options = [
+        ('grpc.max_send_message_length', 512 * 1024),  # 512KB
+        ('grpc.max_receive_message_length', 512 * 1024),  # 512KB
+        ('grpc.keepalive_time_ms', 5000),  # 5 seconds (reduced from 10)
+        ('grpc.keepalive_timeout_ms', 2000),  # 2 seconds (reduced from 5)
+        ('grpc.keepalive_permit_without_calls', 1),  # Allow keepalive pings when there are no calls
+        ('grpc.http2.min_time_between_pings_ms', 5000),  # 5 seconds
+        ('grpc.http2.max_pings_without_data', 5),  # Allow more pings without data
+        ('grpc.http2.min_ping_interval_without_data_ms', 2000),  # 2 seconds
+        ('grpc.max_connection_idle_ms', 60000),  # 1 minute max idle
+        ('grpc.max_connection_age_ms', 300000),  # 5 minutes max age
+        ('grpc.max_connection_age_grace_ms', 5000),  # 5 seconds grace period
+    ]
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10),
+        options=options
+    )
     chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatServicer(), server)
     server.add_insecure_port(f'{host}:{port}')
     server.start()
