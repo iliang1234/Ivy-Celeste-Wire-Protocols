@@ -16,7 +16,9 @@ import chat_pb2
 import chat_pb2_grpc
 
 class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
-    def __init__(self):
+    def __init__(self, host: str = 'localhost', port: int = 65432):
+        self.host = host
+        self.port = port
         self.messages = {}  # username -> {msg_id: message}
         self.accounts = {}  # username -> {password_hash}
         # active_sessions now maps username to a list of per-stream queues
@@ -290,6 +292,9 @@ if __name__ == '__main__':
     parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "0.0.0.0"),
                       help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
-                      help="Server port")
+                      help="Port number")
     args = parser.parse_args()
-    serve(args.host, args.port)
+    
+    server = ChatServicer(host=args.host, port=args.port)
+    print(f"Server started on {args.host}:{args.port}")
+    serve()
