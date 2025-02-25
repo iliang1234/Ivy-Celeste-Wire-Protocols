@@ -134,6 +134,12 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 read=False
             )
             
+            # Ensure message dictionaries exist for both users
+            if request.recipient not in self.messages:
+                self.messages[request.recipient] = {}
+            if request.sender not in self.messages:
+                self.messages[request.sender] = {}
+            
             # Store message for both sender and recipient
             self.messages[request.recipient][msg_id] = message
             self.messages[request.sender][msg_id] = message
@@ -240,6 +246,23 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             if request.username not in self.active_sessions:
                 self.active_sessions[request.username] = []
             self.active_sessions[request.username].append(context)
+            
+            # Send all existing messages for this user
+            messages = []
+            for user_messages in self.messages.values():
+                for msg in user_messages.values():
+                    if msg.sender == request.username or msg.recipient == request.username:
+                        messages.append(msg)
+            
+            # Sort messages by ID
+            messages.sort(key=lambda x: x.id)
+            
+            # Send existing messages
+            for msg in messages:
+                try:
+                    context.write(msg)
+                except:
+                    pass
         
         try:
             # Keep the stream alive
