@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package chat;
+
+service ChatService {
+  // Account management
+  rpc CreateAccount(CreateAccountRequest) returns (StatusResponse) {}
+  rpc Login(LoginRequest) returns (LoginResponse) {}
+  rpc DeleteAccount(DeleteAccountRequest) returns (StatusResponse) {}
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse) {}
+
+  // Messaging
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {}
+  rpc ReadMessages(ReadMessagesRequest) returns (ReadMessagesResponse) {}
+  rpc DeleteMessages(DeleteMessagesRequest) returns (StatusResponse) {}
+  rpc GetUnreadCount(UnreadCountRequest) returns (UnreadCountResponse) {}
+  rpc StreamMessages(StreamMessagesRequest) returns (stream ChatMessage) {}
+}
+
+message CreateAccountRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string message = 2;
+  int32 unread_count = 3;
+  repeated ChatMessage messages = 4;
+}
+
+message DeleteAccountRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message ListAccountsRequest {
+  optional string pattern = 1;
+}
+
+message ListAccountsResponse {
+  repeated string accounts = 1;
+}
+
+message SendMessageRequest {
+  string sender = 1;
+  string recipient = 2;
+  string content = 3;
+}
+
+message SendMessageResponse {
+  bool success = 1;
+  string message = 2;
+  int32 message_id = 3;
+}
+
+message ReadMessagesRequest {
+  string username = 1;
+  optional string sender = 2;
+}
+
+message ReadMessagesResponse {
+  repeated ChatMessage messages = 1;
+}
+
+message DeleteMessagesRequest {
+  string username = 1;
+  string other_user = 2;
+  repeated int32 message_ids = 3;
+}
+
+message UnreadCountRequest {
+  string username = 1;
+}
+
+message UnreadCountResponse {
+  int32 unread_count = 1;
+}
+
+message StreamMessagesRequest {
+  string username = 1;
+}
+
+message ChatMessage {
+  int32 id = 1;
+  string sender = 2;
+  string recipient = 3;
+  string content = 4;
+  string timestamp = 5;
+  bool read = 6;
+}
+
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+}
