@@ -720,7 +720,7 @@ class ChatClient:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the chat client.")
-    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"),
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "10.250.80.217"),
                         help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
                         help="Server port")
