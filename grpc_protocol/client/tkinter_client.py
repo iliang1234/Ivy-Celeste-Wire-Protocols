@@ -88,14 +88,15 @@ class GRPCClient:
                 ]
             )
             self.stub = chat_pb2_grpc.ChatServiceStub(self.channel)
+            print(f"Connected to server at {self.host}:{self.port}")
         except Exception as e:
             print(f"Failed to connect to server: {e}")
             raise
 
     def close(self):
-        self.running = False
         if self.channel:
             self.channel.close()
+            print("Channel closed.")
 
     def register_user(self, username: str, password: str) -> bool:
         try:
@@ -198,20 +199,15 @@ class ChatClient:
         if key not in self.chat_histories:
             self.chat_histories[key] = []
 
-        # Check for deletion notification.
-        # In the new server code, deletion notifications have content "<message deleted>"
-        if message.content == "<message deleted>" and message.id:
-            # Remove message from local history
+        if message.content == "<message deleted>" and message.id is not None:
             original_len = len(self.chat_histories[key])
             self.chat_histories[key] = [msg for msg in self.chat_histories[key] if msg.id != message.id]
             if len(self.chat_histories[key]) != original_len:
-                # If the chat is currently open, refresh the display.
                 current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
                 if current_recipient == other_user:
                     self.refresh_messages(force=True)
             return
 
-        # Otherwise, process as a new (or replacement) message.
         temp_msg_index = next((i for i, msg in enumerate(self.chat_histories[key]) 
                                if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
         if temp_msg_index >= 0:
@@ -649,20 +645,22 @@ class ChatClient:
         finally:
             self.grpc_client.close()
             if self.message_listener:
-                self.message_listener.join(timeout=1)
+                self.message_listener.join(timeout=1.0)
     
     def stop_message_listener(self):
-        self.running = False
+        self.grpc_client.running = False
         if hasattr(self, 'message_listener'):
             self.message_listener.join(timeout=1.0)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the chat client.")
     parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"),
-                      help="Server hostname or IP")
+                        help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
-                      help="Server port")
+                        help="Server port")
     args = parser.parse_args()
+
+    # Instantiate ChatClient (which uses GRPCClient internally)
     client = ChatClient(args.host, args.port)
     print(f"Connecting to server at {args.host}:{args.port}")
     client.run()

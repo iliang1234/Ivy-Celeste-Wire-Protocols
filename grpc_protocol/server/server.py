@@ -281,7 +281,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
 def serve(host='0.0.0.0', port=65432):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatServicer(), server)
+    chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatServicer(host, port), server)
     server.add_insecure_port(f'{host}:{port}')
     server.start()
     print(f"Server started on {host}:{port}")
@@ -290,11 +290,10 @@ def serve(host='0.0.0.0', port=65432):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Start the chat server.")
     parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "0.0.0.0"),
-                      help="Server hostname or IP")
+                        help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
-                      help="Port number")
+                        help="Port number")
     args = parser.parse_args()
-    
-    server = ChatServicer(host=args.host, port=args.port)
-    print(f"Server started on {args.host}:{args.port}")
-    serve()
+
+    # Pass the parsed arguments to the serve function.
+    serve(host=args.host, port=args.port)
