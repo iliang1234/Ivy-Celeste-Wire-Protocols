@@ -161,6 +161,8 @@ class GRPCClient:
 
 class ChatClient:
     def __init__(self, host: str = '127.0.0.1', port: int = 65432):
+        self.host = host  # Store the host
+        self.port = port  # Store the port
         self.grpc_client = GRPCClient(host, port)
         self.root = tk.Tk()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -678,7 +680,7 @@ class ChatClient:
             username = self.current_user
             self.current_user = None
             self.grpc_client.close()
-            self.grpc_client = GRPCClient()
+            self.grpc_client = GRPCClient(self.host, self.port)
             if hasattr(self, 'scrollable_frame'):
                 for widget in self.scrollable_frame.winfo_children():
                     widget.destroy()
@@ -712,7 +714,7 @@ class ChatClient:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the chat client.")
-    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"),
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "10.250.80.217"),
                         help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
                         help="Server port")
