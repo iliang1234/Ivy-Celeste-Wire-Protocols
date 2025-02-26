@@ -47,17 +47,17 @@ pip install -r requirements.txt
 
 1. Start the server:
 ```bash
-python3 json_protocol/server/server.py --host \[host IP address\] --port \[port number\]
+python3 grpc_protocol/server/server.py --host \[host IP address\] --port \[port number\]
 ```
 
 2. In a new terminal, you may start the client on the local device:
 ```bash
-python3 json_protocol/client/tkinter_client.py
+python3 grpc_protocol/client/tkinter_client.py
 ```
 
 3. In a new terminal, you may start the client on a different device:
 ```bash
-python3 -OO -X faulthandler tkinter_client.py --host \[host IP address\] --port \[port number\]
+python3 -X faulthandler grpc_protocol/client/tkinter_client.py --host \[host IP address\] --port \[port number\]
 ```
 
 ## Usage

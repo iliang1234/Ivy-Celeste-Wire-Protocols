@@ -72,10 +72,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             # Sort messages by ID
             all_messages.sort(key=lambda x: x.id)
             
-            # Count unread messages
+            # Count unread messages (without marking them as read yet)
             unread_count = sum(1 for msg in all_messages 
-                             if not msg.read and msg.recipient == request.username)
+                            if not msg.read and msg.recipient == request.username)
             
+            # Return login response with unread message count
             return chat_pb2.LoginResponse(
                 success=True,
                 message=f'Login successful. You have {unread_count} unread messages.',
@@ -174,14 +175,14 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             if request.sender:
                 for msg in self.messages[request.username].values():
                     if msg.sender == request.sender or msg.recipient == request.sender:
-                        if msg.recipient == request.username:
-                            msg.read = True
+                        if msg.recipient == request.username and not msg.read:
+                            msg.read = True  # Mark the message as read
                         relevant_messages.append(msg)
             # Otherwise, return all messages
             else:
                 for msg in self.messages[request.username].values():
-                    if msg.recipient == request.username:
-                        msg.read = True
+                    if msg.recipient == request.username and not msg.read:
+                        msg.read = True  # Mark the message as read
                     relevant_messages.append(msg)
             
             return chat_pb2.ReadMessagesResponse(messages=relevant_messages)

@@ -196,9 +196,12 @@ class ChatClient:
 
         other_user = message.sender if message.recipient == self.current_user else message.recipient
         key = tuple(sorted([message.sender, message.recipient]))
+
+        # Create a chat history for this conversation if it doesn't exist
         if key not in self.chat_histories:
             self.chat_histories[key] = []
 
+        # Handle message deletion
         if message.content == "<message deleted>" and message.id is not None:
             original_len = len(self.chat_histories[key])
             self.chat_histories[key] = [msg for msg in self.chat_histories[key] if msg.id != message.id]
@@ -208,14 +211,16 @@ class ChatClient:
                     self.refresh_messages(force=True)
             return
 
+        # Replace temporary message with actual one
         temp_msg_index = next((i for i, msg in enumerate(self.chat_histories[key]) 
-                               if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
+                                if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
         if temp_msg_index >= 0:
             self.chat_histories[key][temp_msg_index] = message
             current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
             if current_recipient == other_user:
                 self.refresh_messages(force=True)
         else:
+            # Prevent duplicate messages in chat history
             msg_exists = any(msg.id == message.id for msg in self.chat_histories[key])
             if not msg_exists:
                 self.chat_histories[key].append(message)
@@ -223,12 +228,25 @@ class ChatClient:
                 if current_recipient == other_user:
                     self.refresh_messages(force=True)
                     self.messages_canvas.yview_moveto(1.0)
-        if message.recipient == self.current_user:
-            if message.sender == other_user:
+
+                # Only increment unread count if:
+                # 1. Message is for current user
+                # 2. Message is from someone else
+                # 3. Either the window is minimized OR the recipient is not selected
+                if (message.recipient == self.current_user and 
+                    message.sender != self.current_user and 
+                    not message.read and
+                    (self.root.state() == 'iconic' or current_recipient != message.sender)):
+                    self.unread_count += 1
+                    self.root.title(f"Chat Client ({self.unread_count} unread)")
+                    message.read = True
+
+            # Play sound notification if message is from the selected user
+            if (message.recipient == self.current_user and 
+                message.sender != self.current_user and 
+                message.sender == self.receiver_entry.get()):
                 self.root.bell()
-            if self.root.state() == 'iconic':
-                self.unread_count += 1
-                self.root.title(f"Chat Client ({self.unread_count} unread)")
+
 
     def setup_gui(self):
         self.root.title("Chat Application")
@@ -336,7 +354,8 @@ class ChatClient:
     def show_chat_page(self):
         self.login_frame.pack_forget()
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
-        self.root.title(f"Chat - {self.current_user}")
+        # self.root.title(f"Chat - {self.current_user}")
+        self.root.title(f"Chat Client ({self.unread_count} unread)")
         self.refresh_users()
         self.refresh_messages()
 
@@ -390,18 +409,31 @@ class ChatClient:
             user = self.users_listbox.get(selection[0])
             self.receiver_entry.delete(0, tk.END)
             self.receiver_entry.insert(0, user)
+            
+            # Reset unread count for this conversation
+            self.unread_count = 0
+            self.root.title(f"Chat Client ({self.unread_count} unread)")
+
+            # Clear previous chat and load new chat history
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
+
             messages = self.grpc_client.read_messages(self.current_user, user)
             key = tuple(sorted([self.current_user, user]))
+            
             if key not in self.chat_histories:
                 self.chat_histories[key] = []
             self.chat_histories[key] = messages
-            if self.unread_count > 0:
-                self.unread_count = 0
-                self.root.title("Chat Application")
+            
+            # Mark messages as read in the history
+            for msg in self.chat_histories[key]:
+                if msg.recipient == self.current_user:
+                    msg.read = True
+            
+            # Refresh the conversation
             for msg in sorted(messages, key=lambda x: x.id):
                 self.handle_message(msg)
+            
             self.messages_canvas.yview_moveto(1.0)
 
     def register_user(self):
@@ -429,6 +461,18 @@ class ChatClient:
         success, messages = self.grpc_client.login(username, password)
         if success:
             self.current_user = username
+
+            # Initialize unread count for this user by counting unread messages
+            self.unread_count = 0
+            for message in messages:
+                if message.recipient == self.current_user and not message.read:
+                    self.unread_count += 1
+                    message.read = True
+
+            # Set the title to show unread messages count immediately
+            self.root.title(f"Chat Client ({self.unread_count} unread)")
+
+            # Add messages to chat histories
             for message in messages:
                 key = (message.sender, message.recipient)
                 reverse_key = (message.recipient, message.sender)
@@ -440,8 +484,12 @@ class ChatClient:
                     self.chat_histories[key].append(message)
                 if message not in self.chat_histories[reverse_key]:
                     self.chat_histories[reverse_key].append(message)
+
+            # Start the message listener for real-time updates
             self.message_listener = self.grpc_client.start_message_listener(username)
             self.root.after(100, self.check_messages)
+
+            # Show the chat page after login
             self.show_chat_page()
         else:
             messagebox.showerror("Error", "Invalid username or password")
@@ -526,9 +574,17 @@ class ChatClient:
             if not self.grpc_client.delete_messages(self.current_user, [message.id]):
                 messagebox.showerror("Error", "Failed to delete message")
                 return
+
             key = tuple(sorted([message.sender, message.recipient]))
             if key in self.chat_histories:
                 self.chat_histories[key] = [msg for msg in self.chat_histories[key] if msg.id != message.id]
+
+            # Decrease unread count if this was an unread message
+            if message.recipient == self.current_user and not message.read:
+                self.unread_count -= 1
+                self.root.title(f"Chat Client ({self.unread_count} unread)")
+
+            # Rebuild chat display
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
             current_recipient = self.receiver_entry.get()
