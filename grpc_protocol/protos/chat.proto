@@ -95,6 +95,10 @@ message ChatMessage {
   bool read = 6;
 }
 
+message LogoutRequest {
+    string username = 1;
+}
+
 message StatusResponse {
   bool success = 1;
   string message = 2;

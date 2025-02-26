@@ -675,10 +675,18 @@ class ChatClient:
     
     def logout(self):
         if messagebox.askokcancel("Confirm", "Are you sure you want to logout?"):
-            username = self.current_user
+            # username = self.current_user
+            # Inform the server of logout
+            try:
+                request = chat_pb2.LogoutRequest(username=self.current_user)
+                response = self.grpc_client.stub.Logout(request)
+                print(f"Logout RPC response: {response.message}")
+            except Exception as e:
+                print(f"Logout RPC failed: {e}")
+
             self.current_user = None
             self.grpc_client.close()
-            self.grpc_client = GRPCClient()
+            self.grpc_client = GRPCClient(host=self.grpc_client.host, port=self.grpc_client.port)
             if hasattr(self, 'scrollable_frame'):
                 for widget in self.scrollable_frame.winfo_children():
                     widget.destroy()

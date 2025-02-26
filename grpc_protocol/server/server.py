@@ -279,6 +279,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     self.active_sessions[request.username].remove(local_queue)
                     if not self.active_sessions[request.username]:
                         del self.active_sessions[request.username]
+    
 
 def serve(host='0.0.0.0', port=65432):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -287,6 +288,15 @@ def serve(host='0.0.0.0', port=65432):
     server.start()
     print(f"Server started on {host}:{port}")
     server.wait_for_termination()
+
+def Logout(self, request, context):
+    with self.lock:
+        if request.username in self.active_sessions:
+            del self.active_sessions[request.username]
+    return chat_pb2.StatusResponse(
+        success=True,
+        message='Logout successful'
+    )
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Start the chat server.")
