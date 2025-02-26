@@ -464,9 +464,11 @@ class ChatClient:
 
             # Initialize unread count for this user by counting unread messages
             self.unread_count = 0
+            unique_timestamps = []
             for message in messages:
-                if message.recipient == self.current_user and not message.read:
+                if message.recipient == self.current_user and not message.read and (message.timestamp not in unique_timestamps):
                     self.unread_count += 1
+                    unique_timestamps.append(message.timestamp)
                     message.read = True
 
             # Set the title to show unread messages count immediately
