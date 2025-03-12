@@ -1,0 +1,21 @@
+{'n0': {0: sender: "n0"
+recipient: "n1"
+content: "hi"
+timestamp: "2025-03-12T16:15:12.725894"
+read: true
+, 1: id: 1
+sender: "n1"
+recipient: "n0"
+content: "bye"
+timestamp: "2025-03-12T16:15:45.499744"
+}, 'n1': {0: sender: "n0"
+recipient: "n1"
+content: "hi"
+timestamp: "2025-03-12T16:15:12.725894"
+read: true
+, 1: id: 1
+sender: "n1"
+recipient: "n0"
+content: "bye"
+timestamp: "2025-03-12T16:15:45.499744"
+}}

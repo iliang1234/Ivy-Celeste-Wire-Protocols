@@ -149,6 +149,21 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             self.messages[request.recipient][msg_id] = message
             self.messages[request.sender][msg_id] = message
 
+            # Print message dictionaries for debugging
+            print(self.messages)
+            # print("\n=== Current Message Dictionaries ===")
+            # for username, msgs in self.messages.items():
+            #     if msgs:  # Only print if user has messages
+            #         print(f"\nMessages for {username}:")
+            #         for msg_id, msg in msgs.items():
+            #             print(f"  Message ID: {msg_id}")
+            #             print(f"    From: {msg.sender}")
+            #             print(f"    To: {msg.recipient}")
+            #             print(f"    Content: {msg.content}")
+            #             print(f"    Time: {msg.timestamp}")
+            #             print(f"    Read: {msg.read}")
+            # print("===================================\n")
+
             # Enqueue the new message to all active sessions for sender and recipient
             recipients = {request.sender, request.recipient}
             for username in recipients:
