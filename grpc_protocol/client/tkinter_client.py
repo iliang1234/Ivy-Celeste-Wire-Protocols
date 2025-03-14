@@ -79,23 +79,29 @@ class GRPCClient:
             self.channel = grpc.insecure_channel(
                 f"{self.host}:{self.port}",
                 options=[
-                    ('grpc.keepalive_time_ms', 30000),
-                    ('grpc.keepalive_timeout_ms', 10000),
-                    ('grpc.keepalive_permit_without_calls', False),
-                    ('grpc.http2.min_time_between_pings_ms', 30000),
-                    ('grpc.http2.max_pings_without_data', 2),
+                    ('grpc.enable_http_proxy', 0),
+                    ('grpc.keepalive_time_ms', 10000),
+                    ('grpc.keepalive_timeout_ms', 5000),
+                    ('grpc.keepalive_permit_without_calls', True),
+                    ('grpc.http2.min_time_between_pings_ms', 10000),
+                    ('grpc.http2.max_pings_without_data', 0),
                     ('grpc.max_receive_message_length', 10 * 1024 * 1024),
                 ]
             )
             self.stub = chat_pb2_grpc.ChatServiceStub(self.channel)
             print(f"Connected to server at {self.host}:{self.port}")
+            return True
         except Exception as e:
             print(f"Failed to connect to server: {e}")
-            raise
+            return False
 
     def close(self):
+        self.running = False
         if self.channel:
-            self.channel.close()
+            try:
+                self.channel.close()
+            except:
+                pass
             print("Channel closed.")
 
     def register_user(self, username: str, password: str) -> bool:
@@ -117,26 +123,37 @@ class GRPCClient:
             return False, []
 
     def send_message(self, sender: str, receiver: str, content: str) -> bool:
-        try:
-            print(f"Sending message: sender={sender}, recipient={receiver}, content={content}")
-            request = chat_pb2.SendMessageRequest(sender=sender, recipient=receiver, content=content)
-            response = self.stub.SendMessage(request)
-            if not response.success:
-                print(f"Server failed to send message: {response.message}")
-            return response.success
-        except grpc.RpcError as e:
-            print(f"Failed to send message: {e}")
-            self.connect()
-            return False
-        except Exception as e:
-            print(f"Unexpected error sending message: {e}")
-            return False
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for _ in range(max_retries):
+            try:
+                request = chat_pb2.SendMessageRequest(sender=sender, recipient=receiver, content=content)
+                response = self.stub.SendMessage(request)
+                if response.success:
+                    return True
+                print(f"Failed to send message: {response.message}")
+            except Exception as e:
+                print(f"Error sending message: {e}")
+                # Try to reconnect
+                if self.connect():
+                    continue
+                time.sleep(retry_delay)
+                retry_delay *= 2
+        return False
 
     def start_message_listener(self, username: str):
         def message_listener():
             retry_delay = 1.0
             max_delay = 30.0
             while self.running:
+                if not self.stub:
+                    print("No connection to server for message listening")
+                    time.sleep(min(retry_delay, max_delay))
+                    retry_delay *= 2
+                    self.connect()
+                    continue
+                
                 try:
                     request = chat_pb2.StreamMessagesRequest(username=username)
                     for message in self.stub.StreamMessages(request):
@@ -147,11 +164,13 @@ class GRPCClient:
                 except grpc.RpcError as e:
                     if not self.running:
                         break
-                    print(f"Message listener error: {e}")
+                    print(f"Message listener error on server {self.active_stub_index}: {e}")
+                    # Try next server
+                    self.active_stub_index = (self.active_stub_index + 1) % len(self.stubs)
                     time.sleep(min(retry_delay, max_delay))
                     retry_delay *= 2
                     try:
-                        self.connect()
+                        self.connect_to_servers()
                     except Exception as conn_err:
                         print(f"Reconnection failed: {conn_err}")
         thread = threading.Thread(target=message_listener)
@@ -175,6 +194,11 @@ class ChatClient:
         self.current_msg_page = 1
         self.setup_gui()
         self.check_messages()
+        
+        # Add status label
+        self.status_label = tk.Label(self.root, text="Connected", fg="green")
+        self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
+        self.update_status()
 
     def check_messages(self):
         if not self.current_user or not self.root.winfo_exists():
@@ -191,6 +215,23 @@ class ChatClient:
         finally:
             self.root.after(100, self.check_messages)
 
+    def update_status(self):
+        if not hasattr(self, 'status_label'):
+            return
+            
+        try:
+            # Try a simple request to check connection
+            request = chat_pb2.ListAccountsRequest()
+            self.grpc_client.stub.ListAccounts(request)
+            self.status_label.config(text="Connected", fg="green")
+        except Exception:
+            self.status_label.config(text="Disconnected", fg="red")
+            # Try to reconnect
+            self.grpc_client.connect()
+        
+        # Schedule next update
+        self.root.after(1000, self.update_status)
+    
     def process_message(self, message):
         # Process only messages involving the current user
         if message.sender != self.current_user and message.recipient != self.current_user:
@@ -714,7 +755,7 @@ class ChatClient:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the chat client.")
-    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "10.250.80.217"),
+    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"),
                         help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
                         help="Server port")

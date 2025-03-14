@@ -8,40 +8,65 @@ import os
 import sys
 import time
 import queue
+import signal
+import base64
 
 # Add the parent directory to the Python path so we can import the generated code
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import chat_pb2
 import chat_pb2_grpc
+from persistence import DataPersistence
 
 class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
-    def __init__(self, host: str = 'localhost', port: int = 65432):
+    def __init__(self, host: str = 'localhost', port: int = 65432, server_id: int = 0):
         self.host = host
         self.port = port
-        self.messages = {}  # username -> {msg_id: message}
-        self.accounts = {}  # username -> {password_hash}
-        # active_sessions now maps username to a list of per-stream queues
+        self.server_id = server_id
+        self.data_dir = f'server_data_{server_id}'
+        self.persistence = DataPersistence(self.data_dir)
+        
+        # Load persisted data
+        self.messages = self.persistence.load_messages()
+        self.accounts = self.persistence.load_accounts()
+        self.next_msg_id = self.persistence.load_msg_id()
+        
+        # Initialize active sessions
         self.active_sessions = {}  # username -> list of Queue instances
         self.lock = threading.Lock()
-        self.next_msg_id = 0
+        
+        # Keep track of other servers
+        self.base_port = 65432
+        self.other_servers = [
+            f'{host}:{self.base_port + i}' 
+            for i in range(3) if i != server_id
+        ]
 
     def CreateAccount(self, request, context):
+        print(f"Received registration request for user: {request.username}")
         with self.lock:
             if request.username in self.accounts:
+                print(f"Username {request.username} already exists")
                 return chat_pb2.StatusResponse(
                     success=False,
                     message='Username already exists'
                 )
             
+            print(f"Creating new account for {request.username}")
             salt = bcrypt.gensalt()
             password_hash = bcrypt.hashpw(request.password.encode('utf-8'), salt)
             
             self.accounts[request.username] = {
-                'password_hash': password_hash
+                'password_hash': base64.b64encode(password_hash).decode('utf-8')
             }
             self.messages[request.username] = {}
             
+            # Persist changes
+            print(f"Saving account data for {request.username}")
+            self.persistence.save_accounts(self.accounts)
+            self.persistence.save_messages(self.messages)
+            
+            print(f"Account created successfully for {request.username}")
             return chat_pb2.StatusResponse(
                 success=True,
                 message='Account created successfully'
@@ -54,8 +79,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 message='Username not found'
             )
         
-        if not bcrypt.checkpw(request.password.encode('utf-8'),
-                            self.accounts[request.username]['password_hash']):
+        stored_hash = base64.b64decode(self.accounts[request.username]['password_hash'].encode('utf-8'))
+        if not bcrypt.checkpw(request.password.encode('utf-8'), stored_hash):
             return chat_pb2.LoginResponse(
                 success=False,
                 message='Invalid password'
@@ -91,8 +116,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 message='User not found'
             )
         
-        if not bcrypt.checkpw(request.password.encode('utf-8'),
-                            self.accounts[request.username]['password_hash']):
+        stored_hash = base64.b64decode(self.accounts[request.username]['password_hash'].encode('utf-8'))
+        if not bcrypt.checkpw(request.password.encode('utf-8'), stored_hash):
             return chat_pb2.StatusResponse(
                 success=False,
                 message='Invalid password'
@@ -148,7 +173,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             # Store message for both sender and recipient
             self.messages[request.recipient][msg_id] = message
             self.messages[request.sender][msg_id] = message
-
+            
+            # Persist changes
+            self.persistence.save_messages(self.messages)
+            self.persistence.save_msg_id(self.next_msg_id)
+            
             # Print message dictionaries for debugging
             print(self.messages)
             # print("\n=== Current Message Dictionaries ===")
@@ -295,12 +324,24 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     if not self.active_sessions[request.username]:
                         del self.active_sessions[request.username]
 
-def serve(host='0.0.0.0', port=65432):
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatServicer(host, port), server)
+def serve(host='0.0.0.0', port=65432, server_id=0):
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=50))
+    servicer = ChatServicer(host=host, port=port, server_id=server_id)
+    chat_pb2_grpc.add_ChatServiceServicer_to_server(servicer, server)
     server.add_insecure_port(f'{host}:{port}')
     server.start()
-    print(f"Server started on {host}:{port}")
+    print(f"Server {server_id} started on {host}:{port}")
+    
+    def handle_shutdown(signum, frame):
+        print(f"\nServer {server_id} shutting down...")
+        # Save final state
+        servicer.persistence.save_messages(servicer.messages)
+        servicer.persistence.save_accounts(servicer.accounts)
+        servicer.persistence.save_msg_id(servicer.next_msg_id)
+        server.stop(0)
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, handle_shutdown)
     server.wait_for_termination()
 
 if __name__ == '__main__':
@@ -309,7 +350,9 @@ if __name__ == '__main__':
                         help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
                         help="Port number")
+    parser.add_argument("--server-id", type=int, default=0,
+                        help="Server ID (0-2)")
     args = parser.parse_args()
 
-    # Pass the parsed arguments to the serve function.
-    serve(host=args.host, port=args.port)
+    # Pass the parsed arguments to the serve function
+    serve(host=args.host, port=args.port, server_id=args.server_id)
