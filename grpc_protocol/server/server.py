@@ -11,14 +11,15 @@ import queue
 import signal
 import base64
 
-# Add the parent directory to the Python path so we can import the generated code
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add protos directory to Python path
+protos_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'protos')
+sys.path.append(protos_dir)
 
 import chat_pb2
 import chat_pb2_grpc
 from persistence import DataPersistence
 
-class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
+class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatReplicationServiceServicer):
     def __init__(self, host: str = 'localhost', port: int = 65432, server_id: int = 0):
         self.host = host
         self.port = port
@@ -33,99 +34,323 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         # Keep track of other servers
         self.base_port = 65432
         self.other_servers = [
-            f'{host}:{self.base_port + i}' 
+            (host, self.base_port + i)
             for i in range(3) if i != server_id
         ]
         
-        # Create sync directories for other servers
-        for i in range(3):
-            data_dir = f'server_data_{i}'
-            os.makedirs(data_dir, exist_ok=True)
+        # Initialize replication state
+        self.version = int(time.time() * 1000)  # Lamport timestamp
+        self.replication_stubs = {}
+        self.channels = {}
         
-        # Load data from our own files first
-        self.messages = self.persistence.load_messages()
-        self.accounts = self.persistence.load_accounts()
-        self.next_msg_id = self.persistence.load_msg_id()
+        # Load data from our own files
+        self.messages = self.persistence.load_messages() or {}
+        self.accounts = self.persistence.load_accounts() or {}
+        self.next_msg_id = self.persistence.load_msg_id() or 0
         
-        # If our data is empty, try to load from other servers
-        if not self.accounts:
-            self.sync_from_other_servers()
+        # Start background thread for server discovery
+        self.discovery_thread = threading.Thread(target=self._server_discovery, daemon=True)
+        self.discovery_thread.start()
         
-    def sync_from_other_servers(self):
-        """Load data from other servers if available"""
-        latest_data = None
-        latest_time = 0
-        
-        # Check all server directories for the most recent data
-        for i in range(3):
-            try:
-                data_dir = f'server_data_{i}'
-                persistence = DataPersistence(data_dir)
-                
-                accounts_path = os.path.join(data_dir, 'accounts.json')
-                if not os.path.exists(accounts_path):
-                    continue
-                    
-                # Load data from this server
-                server_data = {
-                    'messages': persistence.load_messages(),
-                    'accounts': persistence.load_accounts(),
-                    'msg_id': persistence.load_msg_id(),
-                    'time': os.path.getmtime(accounts_path)
-                }
-                
-                # Skip if data is empty
-                if not server_data['accounts']:
-                    continue
-                
-                # Use this data if it's more recent
-                if server_data['time'] > latest_time:
-                    latest_time = server_data['time']
-                    latest_data = server_data
-            except Exception as e:
-                print(f"Error loading data from server {i}: {e}")
-                continue
-        
-        # If we found data from other servers and it's newer than ours, use it
-        if latest_data and latest_time > os.path.getmtime(os.path.join(self.data_dir, 'accounts.json')):
-            print(f"Loading newer data from another server")
-            self.messages = latest_data['messages']
-            self.accounts = latest_data['accounts']
-            self.next_msg_id = latest_data['msg_id']
+    def _server_discovery(self):
+        """Background thread to discover and connect to other servers"""
+        while True:
+            for host, port in self.other_servers:
+                if (host, port) not in self.replication_stubs:
+                    try:
+                        # Try to establish connection
+                        channel = grpc.insecure_channel(f"{host}:{port}")
+                        future = grpc.channel_ready_future(channel)
+                        future.result(timeout=1)  # Wait up to 1 second
+                        
+                        # Create stub and store it
+                        stub = chat_pb2_grpc.ChatReplicationServiceStub(channel)
+                        self.replication_stubs[(host, port)] = stub
+                        self.channels[(host, port)] = channel
+                        
+                        # Sync with the new server
+                        try:
+                            self._sync_with_server(stub)
+                            print(f"Connected to replica at {host}:{port}")
+                        except Exception as e:
+                            print(f"Error syncing with server: {e}")
+                    except Exception as e:
+                        print(f"Failed to connect to {host}:{port}: {e}")
+            time.sleep(5)  # Check every 5 seconds
+    
+    def _sync_with_server(self, stub):
+        """Sync state with another server"""
+        try:
+            # Request sync with our last known version
+            request = chat_pb2.SyncRequest(
+                server_id=self.server_id,
+                last_version=self.version
+            )
+            response = stub.SyncState(request, timeout=5)
             
-            # Save to our own files
+            # If their state is newer, update ours
+            if response.state.version > self.version:
+                self.version = response.state.version
+                
+                # Update accounts and messages
+                for username, account in response.state.accounts.items():
+                    self.accounts[username] = {
+                        'password_hash': account.password_hash
+                    }
+                
+                for username, user_msgs in response.state.messages.items():
+                    if username not in self.messages:
+                        self.messages[username] = {}
+                    for msg_id, msg in user_msgs.messages.items():
+                        self.messages[username][msg_id] = {
+                            'id': msg.id,
+                            'sender': msg.sender,
+                            'recipient': msg.recipient,
+                            'content': msg.content,
+                            'timestamp': msg.timestamp,
+                            'read': msg.read
+                        }
+                
+                self.next_msg_id = max(self.next_msg_id, response.state.next_msg_id)
+                
+                # Save to persistence
+                self.persistence.save_accounts(self.accounts)
+                self.persistence.save_messages(self.messages)
+                self.persistence.save_msg_id(self.next_msg_id)
+        except Exception as e:
+            print(f"Error syncing with server: {e}")
+            raise
+    
+    def _propagate_update(self, update_type, affected_data=None):
+        """Propagate an update to all other servers"""
+        # Increment our version
+        self.version = max(self.version, int(time.time() * 1000)) + 1
+        
+        # Create delta state based on update type
+        delta_state = chat_pb2.ServerState(
+            version=self.version,
+            next_msg_id=self.next_msg_id
+        )
+        
+        if update_type in [chat_pb2.UpdateRequest.ACCOUNT_CREATED, chat_pb2.UpdateRequest.ACCOUNT_DELETED]:
+            # For account updates, include just the affected account
+            username = affected_data
+            if username in self.accounts:
+                delta_state.accounts[username].password_hash = self.accounts[username]['password_hash']
+        
+        elif update_type == chat_pb2.UpdateRequest.MESSAGE_SENT:
+            # For message updates, include just the new message
+            msg = affected_data
+            sender = msg['sender']
+            recipient = msg['recipient']
+            msg_id = msg['id']
+            
+            # Add message to both sender and recipient in delta state
+            for username in [sender, recipient]:
+                if username not in delta_state.messages:
+                    delta_state.messages[username] = chat_pb2.UserMessages()
+                delta_state.messages[username].messages[msg_id].CopyFrom(
+                    chat_pb2.ChatMessage(
+                        id=msg['id'],
+                        sender=msg['sender'],
+                        recipient=msg['recipient'],
+                        content=msg['content'],
+                        timestamp=msg['timestamp'],
+                        read=msg['read']
+                    )
+                )
+        
+        # Create update request
+        request = chat_pb2.UpdateRequest(
+            type=update_type,
+            delta_state=delta_state,
+            version=self.version
+        )
+        
+        # Send to all other servers
+        for stub in self.replication_stubs.values():
+            try:
+                stub.PropagateUpdate(request, timeout=5)
+            except Exception as e:
+                print(f"Error propagating update: {e}")
+    
+    # Replication service handlers
+    def SyncState(self, request, context):
+        """Handle sync request from another server"""
+        with self.lock:
+            # Convert our state to proto format
+            state = chat_pb2.ServerState(
+                version=self.version,
+                next_msg_id=self.next_msg_id
+            )
+            
+            # Add accounts
+            for username, account in self.accounts.items():
+                state.accounts[username].password_hash = account['password_hash']
+            
+            # Add messages
+            for username, msgs in self.messages.items():
+                if msgs:  # Only add if there are messages
+                    state.messages[username] = chat_pb2.UserMessages()
+                    for msg_id, msg in msgs.items():
+                        chat_msg = chat_pb2.ChatMessage(
+                            id=msg['id'],
+                            sender=msg['sender'],
+                            recipient=msg['recipient'],
+                            content=msg['content'],
+                            timestamp=msg['timestamp'],
+                            read=msg['read']
+                        )
+                        state.messages[username].messages[msg_id].CopyFrom(chat_msg)
+            
+            return chat_pb2.SyncResponse(state=state)
+    
+    def PropagateUpdate(self, request, context):
+        """Handle update from another server"""
+        with self.lock:
+            # Only apply update if it's newer than our version
+            if request.version <= self.version:
+                return chat_pb2.UpdateResponse(
+                    success=False,
+                    message="Update version is older or equal to current version"
+                )
+            
+            # Update our version
+            self.version = request.version
+            
+            # Apply the changes based on update type
+            delta = request.delta_state
+            if request.type in [chat_pb2.UpdateRequest.ACCOUNT_CREATED, chat_pb2.UpdateRequest.ACCOUNT_DELETED]:
+                # Update accounts
+                for username, account in delta.accounts.items():
+                    if request.type == chat_pb2.UpdateRequest.ACCOUNT_CREATED:
+                        self.accounts[username] = {
+                            'password_hash': account.password_hash
+                        }
+                        if username not in self.messages:
+                            self.messages[username] = {}
+                    else:  # ACCOUNT_DELETED
+                        self.accounts.pop(username, None)
+                        self.messages.pop(username, None)
+            
+            elif request.type == chat_pb2.UpdateRequest.MESSAGE_SENT:
+                # Update messages
+                for username, user_msgs in delta.messages.items():
+                    if username not in self.messages:
+                        self.messages[username] = {}
+                    for msg_id, msg in user_msgs.messages.items():
+                        self.messages[username][msg_id] = {
+                            'id': msg.id,
+                            'sender': msg.sender,
+                            'recipient': msg.recipient,
+                            'content': msg.content,
+                            'timestamp': msg.timestamp,
+                            'read': msg.read
+                        }
+                        self.next_msg_id = max(self.next_msg_id, msg.id + 1)
+            
+            # Save changes to persistence
             self.persistence.save_accounts(self.accounts)
             self.persistence.save_messages(self.messages)
             self.persistence.save_msg_id(self.next_msg_id)
+            
+            return chat_pb2.UpdateResponse(success=True, message="Update applied successfully")
+    
+    def _sync_with_server(self, stub):
+        """Sync state with another server"""
+        try:
+            # Request sync with our last known version
+            request = chat_pb2.SyncRequest(
+                server_id=self.server_id,
+                last_version=self.version
+            )
+            response = stub.SyncState(request, timeout=5)
+            
+            # If their state is newer, update ours
+            if response.state.version > self.version:
+                self.version = response.state.version
                 
-    def sync_with_other_servers(self):
-        """Sync data with other server instances"""
-        # First save to our own directory
-        self.persistence.save_accounts(self.accounts)
-        self.persistence.save_messages(self.messages)
-        self.persistence.save_msg_id(self.next_msg_id)
+                # Update accounts and messages
+                for username, account in response.state.accounts.items():
+                    self.accounts[username] = {
+                        'password_hash': account.password_hash
+                    }
+                
+                for username, user_msgs in response.state.messages.items():
+                    if username not in self.messages:
+                        self.messages[username] = {}
+                    for msg_id, msg in user_msgs.messages.items():
+                        self.messages[username][msg_id] = {
+                            'id': msg.id,
+                            'sender': msg.sender,
+                            'recipient': msg.recipient,
+                            'content': msg.content,
+                            'timestamp': msg.timestamp,
+                            'read': msg.read
+                        }
+                
+                self.next_msg_id = max(self.next_msg_id, response.state.next_msg_id)
+                
+                # Save to persistence
+                self.persistence.save_accounts(self.accounts)
+                self.persistence.save_messages(self.messages)
+                self.persistence.save_msg_id(self.next_msg_id)
+        except Exception as e:
+            print(f"Error syncing with server: {e}")
+                
+    def _propagate_update(self, update_type, affected_data=None):
+        """Propagate an update to all other servers"""
+        # Increment our version (Lamport timestamp)
+        self.version = max(self.version, int(time.time() * 1000)) + 1
         
-        # Then sync to all other directories
-        for i in range(3):
-            if i == self.server_id:
-                continue
+        # Create the delta state with only changed data
+        delta = chat_pb2.ServerState(
+            version=self.version,
+            next_msg_id=self.next_msg_id
+        )
+        
+        if affected_data:
+            if update_type in [chat_pb2.UpdateRequest.ACCOUNT_CREATED, chat_pb2.UpdateRequest.ACCOUNT_DELETED]:
+                username = affected_data
+                if username in self.accounts:
+                    delta.accounts[username].password_hash = self.accounts[username]['password_hash']
+            elif update_type == chat_pb2.UpdateRequest.MESSAGE_SENT:
+                msg = affected_data
+                if msg['sender'] not in delta.messages:
+                    delta.messages[msg['sender']] = chat_pb2.UserMessages()
+                if msg['recipient'] not in delta.messages:
+                    delta.messages[msg['recipient']] = chat_pb2.UserMessages()
                 
+                # Add message to both sender and recipient's message lists
+                for username in [msg['sender'], msg['recipient']]:
+                    chat_msg = chat_pb2.ChatMessage(
+                        id=msg['id'],
+                        sender=msg['sender'],
+                        recipient=msg['recipient'],
+                        content=msg['content'],
+                        timestamp=msg['timestamp'],
+                        read=msg['read']
+                    )
+                    delta.messages[username].messages[msg['id']].CopyFrom(chat_msg)
+        
+        # Create update request
+        request = chat_pb2.UpdateRequest(
+            type=update_type,
+            delta_state=delta,
+            version=self.version
+        )
+        
+        # Send to all connected servers
+        for (host, port), stub in self.replication_stubs.items():
             try:
-                other_dir = f'server_data_{i}'
-                other_persistence = DataPersistence(other_dir)
-                
-                # Sync accounts
-                other_persistence.save_accounts(self.accounts)
-                
-                # Sync messages
-                other_persistence.save_messages(self.messages)
-                
-                # Sync message ID
-                other_persistence.save_msg_id(self.next_msg_id)
-                
-                print(f"Successfully synced data to server {i}")
+                response = stub.PropagateUpdate(request, timeout=5)
+                if not response.success:
+                    print(f"Failed to propagate update to {host}:{port}: {response.message}")
             except Exception as e:
-                print(f"Failed to sync data to server {i}: {e}")
+                print(f"Error propagating update to {host}:{port}: {e}")
+                # Remove failed stub
+                self.channels.pop((host, port), None)
+                self.replication_stubs.pop((host, port), None)
 
     def CreateAccount(self, request, context):
         print(f"Received registration request for user: {request.username}")
@@ -419,13 +644,23 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 def serve(host='0.0.0.0', port=65432, server_id=0):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=50))
     servicer = ChatServicer(host=host, port=port, server_id=server_id)
-    chat_pb2_grpc.add_ChatServiceServicer_to_server(servicer, server)
+    
+    # Register both services
+    chat_pb2_grpc.add_ChatClientServiceServicer_to_server(servicer, server)
+    chat_pb2_grpc.add_ChatReplicationServiceServicer_to_server(servicer, server)
+    
     server.add_insecure_port(f'{host}:{port}')
     server.start()
     print(f"Server {server_id} started on {host}:{port}")
     
     def handle_shutdown(signum, frame):
         print(f"\nServer {server_id} shutting down...")
+        # Close all replication channels
+        for channel in servicer.channels.values():
+            try:
+                channel.close()
+            except:
+                pass
         # Save final state
         servicer.persistence.save_messages(servicer.messages)
         servicer.persistence.save_accounts(servicer.accounts)

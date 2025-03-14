@@ -2,7 +2,8 @@ syntax = "proto3";
 
 package chat;
 
-service ChatService {
+// Define two separate services - one for client-server and one for server-server
+service ChatClientService {
   // Account management
   rpc CreateAccount(CreateAccountRequest) returns (StatusResponse) {}
   rpc Login(LoginRequest) returns (LoginResponse) {}
@@ -15,6 +16,12 @@ service ChatService {
   rpc DeleteMessages(DeleteMessagesRequest) returns (StatusResponse) {}
   rpc GetUnreadCount(UnreadCountRequest) returns (UnreadCountResponse) {}
   rpc StreamMessages(StreamMessagesRequest) returns (stream ChatMessage) {}
+}
+
+service ChatReplicationService {
+  // Server-to-server replication
+  rpc SyncState(SyncRequest) returns (SyncResponse) {}
+  rpc PropagateUpdate(UpdateRequest) returns (UpdateResponse) {}
 }
 
 message CreateAccountRequest {
@@ -95,6 +102,49 @@ message ChatMessage {
   bool read = 6;
 }
 
+// Server-to-server replication messages
+message ServerState {
+  map<string, AccountData> accounts = 1;
+  map<string, UserMessages> messages = 2;
+  int32 next_msg_id = 3;
+  int64 version = 4;  // Lamport timestamp for versioning
+}
+
+message AccountData {
+  string password_hash = 1;
+}
+
+message UserMessages {
+  map<int32, ChatMessage> messages = 1;  // message_id -> Message
+}
+
+message SyncRequest {
+  int32 server_id = 1;
+  int64 last_version = 2;  // Last known Lamport timestamp
+}
+
+message SyncResponse {
+  ServerState state = 1;
+}
+
+message UpdateRequest {
+  enum UpdateType {
+    ACCOUNT_CREATED = 0;
+    ACCOUNT_DELETED = 1;
+    MESSAGE_SENT = 2;
+    MESSAGE_DELETED = 3;
+  }
+  UpdateType type = 1;
+  ServerState delta_state = 2;  // Only the changed data
+  int64 version = 3;  // Lamport timestamp of this update
+}
+
+message UpdateResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Common responses
 message StatusResponse {
   bool success = 1;
   string message = 2;

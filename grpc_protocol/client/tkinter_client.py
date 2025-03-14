@@ -14,8 +14,15 @@ from typing import Dict, List, Optional, Tuple
 import argparse
 import bcrypt
 from datetime import datetime
-from protos import chat_pb2
-from protos import chat_pb2_grpc
+import sys
+import os
+
+# Add protos directory to Python path
+protos_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'protos')
+sys.path.append(protos_dir)
+
+import chat_pb2
+import chat_pb2_grpc
 
 class GRPCClient:
     def __init__(self, host: str = 'localhost', port: int = 65432):
@@ -27,6 +34,7 @@ class GRPCClient:
         # Use a bounded queue to avoid memory issues
         self.message_queue = queue.Queue(maxsize=1000)
         self.running = True
+        self.message_listener_thread = None
         self.connect_to_servers()
         
     def list_accounts(self, pattern: str = None) -> List[str]:
@@ -144,20 +152,26 @@ class GRPCClient:
                         ('grpc.max_receive_message_length', 10 * 1024 * 1024),
                     ]
                 )
-                stub = chat_pb2_grpc.ChatServiceStub(channel)
                 
                 # Test connection with timeout
                 future = grpc.channel_ready_future(channel)
-                future.result(timeout=2)  # Wait up to 2 seconds
+                future.result(timeout=1)  # Quick timeout for initial check
                 
-                # Test RPC call
+                # Create stub and test RPC call
+                stub = chat_pb2_grpc.ChatClientServiceStub(channel)
                 request = chat_pb2.ListAccountsRequest()
-                stub.ListAccounts(request, timeout=2)
+                stub.ListAccounts(request, timeout=1)
                 
+                # Store working connection
                 self.channels[i] = channel
                 self.stubs[i] = stub
-                print(f"Connected to server at {self.host}:{port}")
-                connected = True
+                
+                # Update active stub if this is first working one
+                if not connected:
+                    self.active_stub_index = i
+                    connected = True
+                
+                print(f"Connected to server {i} at {self.host}:{port}")
             except Exception as e:
                 print(f"Failed to connect to server {i}: {e}")
                 if self.channels[i]:
@@ -167,12 +181,7 @@ class GRPCClient:
                         pass
                 self.channels[i] = None
                 self.stubs[i] = None
-        
-        # Update active stub index to first working stub
-        for i, stub in enumerate(self.stubs):
-            if stub is not None:
-                self.active_stub_index = i
-                break
+                continue
         
         return connected
 
@@ -236,35 +245,19 @@ class GRPCClient:
         # Try each server until one succeeds
         start_idx = self.active_stub_index
         
-        # First try the current active server
-        if self.stubs[start_idx] is not None:
-            try:
-                request = chat_pb2.SendMessageRequest(sender=sender, recipient=receiver, content=content)
-                response = self.stubs[start_idx].SendMessage(request)
-                if response.success:
-                    return True
-            except Exception as e:
-                print(f"Active server {start_idx} failed: {e}")
-                if self.channels[start_idx]:
-                    try:
-                        self.channels[start_idx].close()
-                    except:
-                        pass
-                self.channels[start_idx] = None
-                self.stubs[start_idx] = None
-        
-        # Try remaining servers in order
-        for i in range(1, 3):
-            idx = (start_idx + i) % 3
+        # Try all servers in order, starting with active one
+        for attempt in range(3):
+            idx = (start_idx + attempt) % 3
             if self.stubs[idx] is None:
                 continue
                 
             try:
                 request = chat_pb2.SendMessageRequest(sender=sender, recipient=receiver, content=content)
-                response = self.stubs[idx].SendMessage(request)
+                response = self.stubs[idx].SendMessage(request, timeout=2)
                 if response.success:
-                    self.active_stub_index = idx
-                    print(f"Successfully switched to server {idx}")
+                    if idx != self.active_stub_index:
+                        print(f"Successfully switched to server {idx}")
+                        self.active_stub_index = idx
                     return True
             except Exception as e:
                 print(f"Server {idx} failed: {e}")
@@ -278,41 +271,37 @@ class GRPCClient:
         
         # All current connections failed, try to reconnect
         print("All servers failed, attempting to reconnect...")
+        self.connect_to_servers()
+        
+        # Try one more time with new connections
         for i in range(3):
+            if self.stubs[i] is None:
+                continue
+                
             try:
-                port = self.base_port + i
-                channel = grpc.insecure_channel(
-                    f"{self.host}:{port}",
-                    options=[
-                        ('grpc.enable_http_proxy', 0),
-                        ('grpc.keepalive_time_ms', 10000),
-                        ('grpc.keepalive_timeout_ms', 5000),
-                        ('grpc.keepalive_permit_without_calls', True),
-                    ]
-                )
-                
-                # Test connection with timeout
-                future = grpc.channel_ready_future(channel)
-                future.result(timeout=1)  # Quick timeout
-                
-                stub = chat_pb2_grpc.ChatServiceStub(channel)
                 request = chat_pb2.SendMessageRequest(sender=sender, recipient=receiver, content=content)
-                response = stub.SendMessage(request)
-                
+                response = self.stubs[i].SendMessage(request, timeout=2)
                 if response.success:
-                    self.channels[i] = channel
-                    self.stubs[i] = stub
                     self.active_stub_index = i
                     print(f"Successfully reconnected to server {i}")
                     return True
             except Exception as e:
-                print(f"Failed to reconnect to server {i}: {e}")
+                print(f"Failed to send on reconnected server {i}: {e}")
                 continue
         
         print("All servers failed, even after reconnection attempt")
         return False
 
     def start_message_listener(self, username: str):
+        # Stop any existing listener
+        if self.message_listener_thread and self.message_listener_thread.is_alive():
+            self.running = False
+            self.message_listener_thread.join(timeout=1)
+        
+        # Reset state
+        self.running = True
+        self.message_queue = queue.Queue(maxsize=1000)
+        
         def message_listener():
             retry_delay = 1.0
             max_delay = 30.0
@@ -335,28 +324,24 @@ class GRPCClient:
                     retry_delay = 1.0
                 except Exception as e:
                     print(f"Message listener error on server {current_stub_index}: {e}")
-                    self.stubs[current_stub_index] = None  # Mark this server as failed
                     # Try to find next working server
                     for i in range(3):
-                        idx = (current_stub_index + i) % 3
+                        idx = (current_stub_index + i + 1) % 3
                         if self.stubs[idx] is not None:
                             self.active_stub_index = idx
+                            print(f"Switching to server {idx}")
                             break
-                    time.sleep(min(retry_delay, max_delay))
-                    retry_delay *= 2
-                    print(f"Message listener error on server {self.active_stub_index}: {e}")
-                    # Try next server
-                    self.active_stub_index = (self.active_stub_index + 1) % len(self.stubs)
                     time.sleep(min(retry_delay, max_delay))
                     retry_delay *= 2
                     try:
                         self.connect_to_servers()
                     except Exception as conn_err:
                         print(f"Reconnection failed: {conn_err}")
-        thread = threading.Thread(target=message_listener)
-        thread.daemon = True
-        thread.start()
-        return thread
+        
+        self.message_listener_thread = threading.Thread(target=message_listener)
+        self.message_listener_thread.daemon = True
+        self.message_listener_thread.start()
+        return self.message_listener_thread
 
 class ChatClient:
     def __init__(self, host: str = '127.0.0.1', port: int = 65432):
@@ -365,13 +350,7 @@ class ChatClient:
         self.grpc_client = GRPCClient(host, port)
         self.root = tk.Tk()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.message_ids: Dict[str, tuple] = {}
-        self.chat_histories: Dict[tuple, List] = {}
-        self.current_user: Optional[str] = None
-        self.message_listener: Optional[threading.Thread] = None
-        self.unread_count = 0
-        self.messages_per_page = 10
-        self.current_msg_page = 1
+        self.reset_state()
         self.setup_gui()
         self.check_messages()
         
@@ -379,6 +358,16 @@ class ChatClient:
         self.status_label = tk.Label(self.root, text="Connected", fg="green")
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
         self.update_status()
+    
+    def reset_state(self):
+        """Reset all client state"""
+        self.message_ids = {}
+        self.chat_histories = {}
+        self.current_user = None
+        self.message_listener = None
+        self.unread_count = 0
+        self.messages_per_page = 10
+        self.current_msg_page = 1
 
     def check_messages(self):
         if not self.current_user or not self.root.winfo_exists():
@@ -734,18 +723,7 @@ class ChatClient:
             success = self.grpc_client.send_message(self.current_user, receiver, content)
             if success:
                 self.message_entry.delete(0, tk.END)
-                temp_msg = chat_pb2.ChatMessage(
-                    sender=self.current_user,
-                    recipient=receiver,
-                    content=content,
-                    timestamp=datetime.now().isoformat(),
-                    read=False
-                )
-                chat_key = tuple(sorted([self.current_user, receiver]))
-                if chat_key not in self.chat_histories:
-                    self.chat_histories[chat_key] = []
-                self.chat_histories[chat_key].append(temp_msg)
-                self.handle_message(temp_msg)
+                # Message will be received through the message listener
                 self.messages_canvas.yview_moveto(1.0)
             else:
                 messagebox.showerror("Error", "Failed to send message")
