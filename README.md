@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 1. Start the server:
 ```bash
-python3 grpc_protocol/server/server.py --host \[host IP address\] --port \[port number\]
+python3 grpc_protocol/server/server.py --host \[host IP address\] --port \[port number\] --server-id \[server ID (0, 1, 2)\]
 ```
 
 2. In a new terminal, you may start the client on the local device:

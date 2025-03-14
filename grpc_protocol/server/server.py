@@ -26,11 +26,6 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         self.data_dir = f'server_data_{server_id}'
         self.persistence = DataPersistence(self.data_dir)
         
-        # Load persisted data
-        self.messages = self.persistence.load_messages()
-        self.accounts = self.persistence.load_accounts()
-        self.next_msg_id = self.persistence.load_msg_id()
-        
         # Initialize active sessions
         self.active_sessions = {}  # username -> list of Queue instances
         self.lock = threading.Lock()
@@ -41,6 +36,96 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             f'{host}:{self.base_port + i}' 
             for i in range(3) if i != server_id
         ]
+        
+        # Create sync directories for other servers
+        for i in range(3):
+            data_dir = f'server_data_{i}'
+            os.makedirs(data_dir, exist_ok=True)
+        
+        # Load data from our own files first
+        self.messages = self.persistence.load_messages()
+        self.accounts = self.persistence.load_accounts()
+        self.next_msg_id = self.persistence.load_msg_id()
+        
+        # If our data is empty, try to load from other servers
+        if not self.accounts:
+            self.sync_from_other_servers()
+        
+    def sync_from_other_servers(self):
+        """Load data from other servers if available"""
+        latest_data = None
+        latest_time = 0
+        
+        # Check all server directories for the most recent data
+        for i in range(3):
+            try:
+                data_dir = f'server_data_{i}'
+                persistence = DataPersistence(data_dir)
+                
+                accounts_path = os.path.join(data_dir, 'accounts.json')
+                if not os.path.exists(accounts_path):
+                    continue
+                    
+                # Load data from this server
+                server_data = {
+                    'messages': persistence.load_messages(),
+                    'accounts': persistence.load_accounts(),
+                    'msg_id': persistence.load_msg_id(),
+                    'time': os.path.getmtime(accounts_path)
+                }
+                
+                # Skip if data is empty
+                if not server_data['accounts']:
+                    continue
+                
+                # Use this data if it's more recent
+                if server_data['time'] > latest_time:
+                    latest_time = server_data['time']
+                    latest_data = server_data
+            except Exception as e:
+                print(f"Error loading data from server {i}: {e}")
+                continue
+        
+        # If we found data from other servers and it's newer than ours, use it
+        if latest_data and latest_time > os.path.getmtime(os.path.join(self.data_dir, 'accounts.json')):
+            print(f"Loading newer data from another server")
+            self.messages = latest_data['messages']
+            self.accounts = latest_data['accounts']
+            self.next_msg_id = latest_data['msg_id']
+            
+            # Save to our own files
+            self.persistence.save_accounts(self.accounts)
+            self.persistence.save_messages(self.messages)
+            self.persistence.save_msg_id(self.next_msg_id)
+                
+    def sync_with_other_servers(self):
+        """Sync data with other server instances"""
+        # First save to our own directory
+        self.persistence.save_accounts(self.accounts)
+        self.persistence.save_messages(self.messages)
+        self.persistence.save_msg_id(self.next_msg_id)
+        
+        # Then sync to all other directories
+        for i in range(3):
+            if i == self.server_id:
+                continue
+                
+            try:
+                other_dir = f'server_data_{i}'
+                other_persistence = DataPersistence(other_dir)
+                
+                # Sync accounts
+                other_persistence.save_accounts(self.accounts)
+                
+                # Sync messages
+                other_persistence.save_messages(self.messages)
+                
+                # Sync message ID
+                other_persistence.save_msg_id(self.next_msg_id)
+                
+                print(f"Successfully synced data to server {i}")
+            except Exception as e:
+                print(f"Failed to sync data to server {i}: {e}")
 
     def CreateAccount(self, request, context):
         print(f"Received registration request for user: {request.username}")
@@ -61,10 +146,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             }
             self.messages[request.username] = {}
             
-            # Persist changes
+            # Persist changes and sync
             print(f"Saving account data for {request.username}")
             self.persistence.save_accounts(self.accounts)
             self.persistence.save_messages(self.messages)
+            self.sync_with_other_servers()
             
             print(f"Account created successfully for {request.username}")
             return chat_pb2.StatusResponse(
@@ -131,6 +217,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             # Remove user from active sessions
             if request.username in self.active_sessions:
                 del self.active_sessions[request.username]
+                
+            # Persist changes and sync
+            self.persistence.save_accounts(self.accounts)
+            self.persistence.save_messages(self.messages)
+            self.sync_with_other_servers()
             
             return chat_pb2.StatusResponse(
                 success=True,
@@ -174,9 +265,10 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             self.messages[request.recipient][msg_id] = message
             self.messages[request.sender][msg_id] = message
             
-            # Persist changes
+            # Persist changes and sync
             self.persistence.save_messages(self.messages)
             self.persistence.save_msg_id(self.next_msg_id)
+            self.sync_with_other_servers()
             
             # Print message dictionaries for debugging
             print(self.messages)
