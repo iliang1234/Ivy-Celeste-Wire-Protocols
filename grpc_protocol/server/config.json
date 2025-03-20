@@ -1,0 +1,23 @@
+{
+  "servers": [
+    {
+      "id": 0,
+      "host": "localhost",
+      "port": 65432
+    },
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 65433
+    },
+    {
+      "id": 2,
+      "host": "localhost",
+      "port": 65434
+    }
+  ],
+  "database": {
+    "type": "file",
+    "connection": "/Users/iliang/Desktop/CS 2620/Ivy-Celeste-Wire-Protocols/server_data"
+  }
+}

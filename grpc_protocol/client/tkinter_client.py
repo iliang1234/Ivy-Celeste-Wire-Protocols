@@ -26,11 +26,16 @@ import chat_pb2_grpc
 
 class GRPCClient:
     def __init__(self, host: str = 'localhost', port: int = 65432):
-        self.host = host
-        self.base_port = port
+        # Load server configuration
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from server.config import load_server_config
+        self.config = load_server_config()
+        
+        # Initialize server connections
         self.channels = [None] * 3  # Support for 3 servers
         self.stubs = [None] * 3
         self.active_stub_index = 0
+        
         # Use a bounded queue to avoid memory issues
         self.message_queue = queue.Queue(maxsize=1000)
         self.running = True
@@ -137,11 +142,14 @@ class GRPCClient:
 
     def connect_to_servers(self):
         connected = False
-        for i in range(3):
+        for server in self.config['servers']:
+            i = server['id']
+            host = server['host']
+            port = server['port']
+            
             try:
-                port = self.base_port + i
                 channel = grpc.insecure_channel(
-                    f"{self.host}:{port}",
+                    f"{host}:{port}",
                     options=[
                         ('grpc.enable_http_proxy', 0),
                         ('grpc.keepalive_time_ms', 10000),
@@ -150,19 +158,25 @@ class GRPCClient:
                         ('grpc.http2.min_time_between_pings_ms', 10000),
                         ('grpc.http2.max_pings_without_data', 0),
                         ('grpc.max_receive_message_length', 10 * 1024 * 1024),
+                        ('grpc.max_reconnect_backoff_ms', 2000),
                     ]
                 )
                 
                 # Test connection with timeout
                 future = grpc.channel_ready_future(channel)
-                future.result(timeout=1)  # Quick timeout for initial check
+                future.result(timeout=2)  # Increased timeout
                 
                 # Create stub and test RPC call
                 stub = chat_pb2_grpc.ChatClientServiceStub(channel)
                 request = chat_pb2.ListAccountsRequest()
-                stub.ListAccounts(request, timeout=1)
+                stub.ListAccounts(request, timeout=2)  # Increased timeout
                 
                 # Store working connection
+                if self.channels[i]:
+                    try:
+                        self.channels[i].close()
+                    except:
+                        pass
                 self.channels[i] = channel
                 self.stubs[i] = stub
                 
@@ -171,7 +185,7 @@ class GRPCClient:
                     self.active_stub_index = i
                     connected = True
                 
-                print(f"Connected to server {i} at {self.host}:{port}")
+                print(f"Connected to server {i} at {host}:{port}")
             except Exception as e:
                 print(f"Failed to connect to server {i}: {e}")
                 if self.channels[i]:
@@ -182,6 +196,11 @@ class GRPCClient:
                 self.channels[i] = None
                 self.stubs[i] = None
                 continue
+        
+        if not connected:
+            print("Failed to connect to any server. Retrying in 2 seconds...")
+            time.sleep(2)
+            return self.connect_to_servers()
         
         return connected
 
@@ -435,11 +454,20 @@ class ChatClient:
             # Prevent duplicate messages in chat history
             msg_exists = any(msg.id == message.id for msg in self.chat_histories[key])
             if not msg_exists:
-                self.chat_histories[key].append(message)
+                # Insert message in chronological order
+                insert_idx = 0
+                for i, msg in enumerate(self.chat_histories[key]):
+                    if msg.timestamp > message.timestamp:
+                        break
+                    insert_idx = i + 1
+                self.chat_histories[key].insert(insert_idx, message)
+                
                 current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
                 if current_recipient == other_user:
                     self.refresh_messages(force=True)
-                    self.messages_canvas.yview_moveto(1.0)
+                    # Only scroll to bottom for new messages
+                    if insert_idx == len(self.chat_histories[key]) - 1:
+                        self.messages_canvas.yview_moveto(1.0)
 
                 # Only increment unread count if:
                 # 1. Message is for current user
@@ -463,6 +491,15 @@ class ChatClient:
     def setup_gui(self):
         self.root.title("Chat Application")
         self.root.geometry("800x600")
+        
+        # Configure styles
+        style = ttk.Style()
+        style.configure('Bubble.TFrame', background='#ffffff')
+        style.configure('Delete.TButton', font=('Helvetica', 8))
+        
+        # Set window icon and theme
+        self.root.configure(bg='#f0f2f5')
+        
         self.main_container = ttk.Frame(self.root)
         self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.login_frame = ttk.LabelFrame(self.main_container, text="Login/Register")
@@ -720,33 +757,53 @@ class ChatClient:
             return
         try:
             print(f"Sending message: sender={self.current_user}, recipient={receiver}, content={content}")
-            success = self.grpc_client.send_message(self.current_user, receiver, content)
-            if success:
-                self.message_entry.delete(0, tk.END)
-                # Message will be received through the message listener
-                self.messages_canvas.yview_moveto(1.0)
-            else:
-                messagebox.showerror("Error", "Failed to send message")
+            # Don't show error if sending fails - the message might still go through
+            # due to server replication
+            self.grpc_client.send_message(self.current_user, receiver, content)
+            self.message_entry.delete(0, tk.END)
+            self.messages_canvas.yview_moveto(1.0)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to send message: {str(e)}")
+            # Log error but don't show to user since message might still succeed
+            print(f"Error sending message (may still succeed): {str(e)}")
 
     def update_chat_history(self, sender: str, receiver: str, content: str):
+        print(f"Updating chat history: {sender} -> {receiver}: {content}")
         chat_key = tuple(sorted([sender, receiver]))
         if chat_key not in self.chat_histories:
             self.chat_histories[chat_key] = []
+        
+        # Create a unique message identifier using all fields
+        message_id = f"{sender}:{receiver}:{content}"
+        if message_id in self.message_ids:
+            print(f"Duplicate message detected: {message_id}")
+            return
+        
         message = f"{sender} -> {receiver}: {content}"
         self.chat_histories[chat_key].append(message)
-        message_frame = ttk.Frame(self.scrollable_frame)
-        message_frame.pack(fill=tk.X, padx=5, pady=2)
-        message_label = ttk.Label(message_frame, text=message, wraplength=400)
-        message_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Clear existing messages in the frame
+        if hasattr(self, 'scrollable_frame'):
+            for widget in self.scrollable_frame.winfo_children():
+                widget.destroy()
+            
+            # Re-add all messages for this chat
+            for msg in self.chat_histories[chat_key]:
+                message_frame = ttk.Frame(self.scrollable_frame)
+                message_frame.pack(fill=tk.X, padx=5, pady=2)
+                message_label = ttk.Label(message_frame, text=msg, wraplength=400)
+                message_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                
+                msg_sender = msg.split(' -> ')[0]
+                if msg_sender == self.current_user:
+                    delete_btn = ttk.Button(message_frame, text="X", width=2,
+                                          command=lambda m=msg: self.delete_message(self.message_ids[m][0]))
+                    delete_btn.pack(side=tk.RIGHT)
+            
+            self.messages_canvas.yview_moveto(1.0)
+        
+        # Store message ID after successful display
         self.message_ids[message] = (len(self.chat_histories[chat_key]) - 1, sender)
-        if sender == self.current_user:
-            delete_btn = ttk.Button(message_frame, text="X", width=2,
-                                  command=lambda msg_id=self.message_ids[message][0]: 
-                                  self.delete_message(msg_id))
-            delete_btn.pack(side=tk.RIGHT)
-        self.messages_canvas.yview_moveto(1.0)
+        print(f"Added message to history: {message}")
 
     def update_message_count(self):
         try:

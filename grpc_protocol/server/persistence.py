@@ -5,20 +5,25 @@ from datetime import datetime
 import chat_pb2
 
 class DataPersistence:
-    def __init__(self, data_dir="server_data"):
-        self.data_dir = data_dir
+    def __init__(self, server_id=0, data_dir="server_data"):
+        self.server_id = server_id
+        self.data_dir = os.path.join(data_dir, f"server_{server_id}")
         self.lock = threading.Lock()
-        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(self.data_dir, exist_ok=True)
         
     def _message_to_dict(self, message):
-        return {
-            'id': message.id,
-            'sender': message.sender,
-            'recipient': message.recipient,
-            'content': message.content,
-            'timestamp': message.timestamp,
-            'read': message.read
-        }
+        # Handle both dict and ChatMessage objects
+        if isinstance(message, dict):
+            return message  # Already a dict, return as is
+        else:
+            return {
+                'id': message.id,
+                'sender': message.sender,
+                'recipient': message.recipient,
+                'content': message.content,
+                'timestamp': message.timestamp,
+                'read': message.read
+            }
     
     def _dict_to_message(self, data):
         message = chat_pb2.ChatMessage()
@@ -39,8 +44,15 @@ class DataPersistence:
                     for msg_id, msg in user_messages.items()
                 }
             
-            with open(os.path.join(self.data_dir, 'messages.json'), 'w') as f:
+            # First write to temp file
+            temp_file = os.path.join(self.data_dir, 'messages.json.tmp')
+            with open(temp_file, 'w') as f:
                 json.dump(messages_dict, f)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Then atomically rename
+            os.rename(temp_file, os.path.join(self.data_dir, 'messages.json'))
     
     def load_messages(self):
         try:
@@ -60,8 +72,15 @@ class DataPersistence:
     
     def save_accounts(self, accounts):
         with self.lock:
-            with open(os.path.join(self.data_dir, 'accounts.json'), 'w') as f:
+            # First write to temp file
+            temp_file = os.path.join(self.data_dir, 'accounts.json.tmp')
+            with open(temp_file, 'w') as f:
                 json.dump(accounts, f)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Then atomically rename
+            os.rename(temp_file, os.path.join(self.data_dir, 'accounts.json'))
     
     def load_accounts(self):
         try:
@@ -73,8 +92,15 @@ class DataPersistence:
     
     def save_msg_id(self, msg_id):
         with self.lock:
-            with open(os.path.join(self.data_dir, 'msg_id.txt'), 'w') as f:
+            # First write to temp file
+            temp_file = os.path.join(self.data_dir, 'msg_id.txt.tmp')
+            with open(temp_file, 'w') as f:
                 f.write(str(msg_id))
+                f.flush()
+                os.fsync(f.fileno())
+            
+            # Then atomically rename
+            os.rename(temp_file, os.path.join(self.data_dir, 'msg_id.txt'))
     
     def load_msg_id(self):
         try:

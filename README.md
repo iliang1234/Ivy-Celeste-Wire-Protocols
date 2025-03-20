@@ -45,20 +45,63 @@ pip install -r requirements.txt
 
 ## Running the Application
 
-1. Start the server:
+### Single Machine Setup
+
+1. Start all servers:
 ```bash
-python3 grpc_protocol/server/server.py --host \[host IP address\] --port \[port number\] --server-id \[server ID (0, 1, 2)\]
+python3 grpc_protocol/server/launch_servers.py
 ```
 
-2. In a new terminal, you may start the client on the local device:
+2. Start the client:
 ```bash
 python3 grpc_protocol/client/tkinter_client.py
 ```
 
-3. In a new terminal, you may start the client on a different device:
+### Distributed Setup (Multiple Machines)
+
+1. Find IP addresses of all machines:
 ```bash
-python3 -X faulthandler grpc_protocol/client/tkinter_client.py --host \[host IP address\] --port \[port number\]
+# On Mac:
+ifconfig | grep "inet " | grep -v 127.0.0.1
+
+# On Windows:
+ipconfig
+# Look for IPv4 Address (e.g., 192.168.1.100)
 ```
+
+2. Configure server locations (do this on one machine):
+```bash
+python3 grpc_protocol/server/launch_servers.py --configure
+```
+When prompted:
+- Enter the IP address of each machine (e.g., 192.168.1.100)
+- Use default ports (65432, 65433, 65434) or choose your own
+
+3. Copy the generated config to all machines:
+- Copy `grpc_protocol/server/config.json` to the same location on all machines
+
+4. Start servers (one per machine):
+```bash
+# On machine 1:
+python3 grpc_protocol/server/server.py --server-id 0
+
+# On machine 2:
+python3 grpc_protocol/server/server.py --server-id 1
+
+# On machine 3:
+python3 grpc_protocol/server/server.py --server-id 2
+```
+
+5. Start clients on any machine:
+```bash
+python3 grpc_protocol/client/tkinter_client.py
+```
+
+### Network Requirements
+- All machines must be on the same network
+- Ports 65432-65434 must be open in firewalls
+- Each machine must be able to ping others using IP addresses
+- Use IP addresses instead of hostnames unless DNS resolution is configured
 
 ## Usage
 

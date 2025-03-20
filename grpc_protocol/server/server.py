@@ -21,10 +21,15 @@ from persistence import DataPersistence
 
 class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatReplicationServiceServicer):
     def __init__(self, host: str = 'localhost', port: int = 65432, server_id: int = 0):
+        from config import load_server_config
+        
         self.host = host
         self.port = port
         self.server_id = server_id
-        self.data_dir = f'server_data_{server_id}'
+        
+        # Load configuration
+        self.config = load_server_config()
+        self.data_dir = os.path.join(self.config['database']['connection'], f'server_{server_id}')
         self.persistence = DataPersistence(self.data_dir)
         
         # Initialize active sessions
@@ -32,10 +37,10 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
         self.lock = threading.Lock()
         
         # Keep track of other servers
-        self.base_port = 65432
         self.other_servers = [
-            (host, self.base_port + i)
-            for i in range(3) if i != server_id
+            (server['host'], server['port'])
+            for server in self.config['servers']
+            if server['id'] != server_id
         ]
         
         # Initialize replication state
@@ -55,28 +60,79 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
     def _server_discovery(self):
         """Background thread to discover and connect to other servers"""
         while True:
+            # First, clean up any dead connections
+            for (host, port) in list(self.replication_stubs.keys()):
+                try:
+                    # Test if connection is still alive
+                    request = chat_pb2.SyncRequest(
+                        server_id=self.server_id,
+                        last_version=self.version
+                    )
+                    self.replication_stubs[(host, port)].SyncState(request, timeout=1)
+                except Exception as e:
+                    print(f"Removing dead connection to {host}:{port}: {e}")
+                    self.channels.pop((host, port), None)
+                    self.replication_stubs.pop((host, port), None)
+            
+            # Then try to establish new connections
             for host, port in self.other_servers:
                 if (host, port) not in self.replication_stubs:
                     try:
+                        print(f"Attempting to connect to server at {host}:{port}...")
                         # Try to establish connection
-                        channel = grpc.insecure_channel(f"{host}:{port}")
+                        channel = grpc.insecure_channel(
+                            f"{host}:{port}",
+                            options=[
+                                ('grpc.enable_http_proxy', 0),
+                                ('grpc.keepalive_time_ms', 10000),
+                                ('grpc.keepalive_timeout_ms', 5000),
+                                ('grpc.keepalive_permit_without_calls', True),
+                                ('grpc.http2.min_time_between_pings_ms', 10000),
+                                ('grpc.http2.max_pings_without_data', 0),
+                                ('grpc.max_receive_message_length', 10 * 1024 * 1024),
+                                ('grpc.max_reconnect_backoff_ms', 2000),
+                            ]
+                        )
+                        
+                        # Test connection with timeout
                         future = grpc.channel_ready_future(channel)
-                        future.result(timeout=1)  # Wait up to 1 second
+                        future.result(timeout=2)  # Increased timeout
                         
                         # Create stub and store it
                         stub = chat_pb2_grpc.ChatReplicationServiceStub(channel)
+                        
+                        # Test the connection with a sync request
+                        request = chat_pb2.SyncRequest(
+                            server_id=self.server_id,
+                            last_version=self.version
+                        )
+                        stub.SyncState(request, timeout=2)
+                        
+                        # Store working connection
                         self.replication_stubs[(host, port)] = stub
                         self.channels[(host, port)] = channel
                         
                         # Sync with the new server
                         try:
+                            print(f"Syncing with server at {host}:{port}...")
                             self._sync_with_server(stub)
-                            print(f"Connected to replica at {host}:{port}")
+                            print(f"Successfully connected to replica at {host}:{port}")
                         except Exception as e:
-                            print(f"Error syncing with server: {e}")
+                            print(f"Error syncing with server at {host}:{port}: {e}")
+                            # Clean up failed connection
+                            self.channels.pop((host, port), None)
+                            self.replication_stubs.pop((host, port), None)
                     except Exception as e:
                         print(f"Failed to connect to {host}:{port}: {e}")
-            time.sleep(5)  # Check every 5 seconds
+                        # Clean up failed connection attempt
+                        if (host, port) in self.channels:
+                            try:
+                                self.channels[(host, port)].close()
+                            except:
+                                pass
+                            self.channels.pop((host, port), None)
+                            self.replication_stubs.pop((host, port), None)
+            time.sleep(1)  # Check more frequently
     
     def _sync_with_server(self, stub):
         """Sync state with another server"""
@@ -86,22 +142,29 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                 server_id=self.server_id,
                 last_version=self.version
             )
+            print(f"Requesting sync with version {self.version}")
             response = stub.SyncState(request, timeout=5)
             
             # If their state is newer, update ours
             if response.state.version > self.version:
+                print(f"Updating state from version {self.version} to {response.state.version}")
                 self.version = response.state.version
                 
                 # Update accounts and messages
                 for username, account in response.state.accounts.items():
+                    print(f"Syncing account for {username}")
                     self.accounts[username] = {
                         'password_hash': account.password_hash
                     }
+                    if username not in self.messages:
+                        self.messages[username] = {}
                 
                 for username, user_msgs in response.state.messages.items():
                     if username not in self.messages:
                         self.messages[username] = {}
-                    for msg_id, msg in user_msgs.messages.items():
+                    for msg_id_str, msg in user_msgs.messages.items():
+                        msg_id = int(msg_id_str)  # Convert string key to int
+                        print(f"Syncing message {msg_id} for {username}")
                         self.messages[username][msg_id] = {
                             'id': msg.id,
                             'sender': msg.sender,
@@ -110,10 +173,29 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                             'timestamp': msg.timestamp,
                             'read': msg.read
                         }
+                        
+                        # Create ChatMessage for active sessions
+                        message = chat_pb2.ChatMessage(
+                            id=msg.id,
+                            sender=msg.sender,
+                            recipient=msg.recipient,
+                            content=msg.content,
+                            timestamp=msg.timestamp,
+                            read=msg.read
+                        )
+                        
+                        # Notify active sessions
+                        if username in self.active_sessions:
+                            for q in self.active_sessions[username]:
+                                try:
+                                    q.put(message)
+                                except Exception as e:
+                                    print(f"Error notifying session: {e}")
                 
                 self.next_msg_id = max(self.next_msg_id, response.state.next_msg_id)
                 
                 # Save to persistence
+                print(f"Saving synced state: {len(self.messages)} users with messages")
                 self.persistence.save_accounts(self.accounts)
                 self.persistence.save_messages(self.messages)
                 self.persistence.save_msg_id(self.next_msg_id)
@@ -125,6 +207,7 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
         """Propagate an update to all other servers"""
         # Increment our version
         self.version = max(self.version, int(time.time() * 1000)) + 1
+        print(f"Propagating update type {update_type} with version {self.version}")
         
         # Create delta state based on update type
         delta_state = chat_pb2.ServerState(
@@ -137,6 +220,7 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
             username = affected_data
             if username in self.accounts:
                 delta_state.accounts[username].password_hash = self.accounts[username]['password_hash']
+                print(f"Propagating account update for {username}")
         
         elif update_type == chat_pb2.UpdateRequest.MESSAGE_SENT:
             # For message updates, include just the new message
@@ -149,7 +233,7 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
             for username in [sender, recipient]:
                 if username not in delta_state.messages:
                     delta_state.messages[username] = chat_pb2.UserMessages()
-                delta_state.messages[username].messages[msg_id].CopyFrom(
+                delta_state.messages[username].messages[str(msg_id)].CopyFrom(  # Convert msg_id to string
                     chat_pb2.ChatMessage(
                         id=msg['id'],
                         sender=msg['sender'],
@@ -159,6 +243,7 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                         read=msg['read']
                     )
                 )
+            print(f"Propagating message {msg_id} from {sender} to {recipient}")
         
         # Create update request
         request = chat_pb2.UpdateRequest(
@@ -168,16 +253,18 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
         )
         
         # Send to all other servers
-        for stub in self.replication_stubs.values():
+        for host, stub in self.replication_stubs.items():
             try:
+                print(f"Sending update to server at {host}")
                 stub.PropagateUpdate(request, timeout=5)
             except Exception as e:
-                print(f"Error propagating update: {e}")
+                print(f"Error propagating update to {host}: {e}")
     
     # Replication service handlers
     def SyncState(self, request, context):
         """Handle sync request from another server"""
         with self.lock:
+            print(f"Received sync request from server {request.server_id} with version {request.last_version}")
             # Convert our state to proto format
             state = chat_pb2.ServerState(
                 version=self.version,
@@ -186,11 +273,13 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
             
             # Add accounts
             for username, account in self.accounts.items():
+                print(f"Including account {username} in sync response")
                 state.accounts[username].password_hash = account['password_hash']
             
             # Add messages
             for username, msgs in self.messages.items():
                 if msgs:  # Only add if there are messages
+                    print(f"Including {len(msgs)} messages for {username} in sync response")
                     state.messages[username] = chat_pb2.UserMessages()
                     for msg_id, msg in msgs.items():
                         chat_msg = chat_pb2.ChatMessage(
@@ -201,21 +290,25 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                             timestamp=msg['timestamp'],
                             read=msg['read']
                         )
-                        state.messages[username].messages[msg_id].CopyFrom(chat_msg)
+                        state.messages[username].messages[str(msg_id)].CopyFrom(chat_msg)
             
+            print(f"Sending sync response with version {self.version}")
             return chat_pb2.SyncResponse(state=state)
     
     def PropagateUpdate(self, request, context):
         """Handle update from another server"""
         with self.lock:
+            print(f"Received update with version {request.version} (our version: {self.version})")
             # Only apply update if it's newer than our version
             if request.version <= self.version:
+                print(f"Ignoring update with older version {request.version}")
                 return chat_pb2.UpdateResponse(
                     success=False,
                     message="Update version is older or equal to current version"
                 )
             
             # Update our version
+            print(f"Updating to version {request.version}")
             self.version = request.version
             
             # Apply the changes based on update type
@@ -224,12 +317,14 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                 # Update accounts
                 for username, account in delta.accounts.items():
                     if request.type == chat_pb2.UpdateRequest.ACCOUNT_CREATED:
+                        print(f"Creating account for {username}")
                         self.accounts[username] = {
                             'password_hash': account.password_hash
                         }
                         if username not in self.messages:
                             self.messages[username] = {}
                     else:  # ACCOUNT_DELETED
+                        print(f"Deleting account for {username}")
                         self.accounts.pop(username, None)
                         self.messages.pop(username, None)
             
@@ -238,7 +333,9 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                 for username, user_msgs in delta.messages.items():
                     if username not in self.messages:
                         self.messages[username] = {}
-                    for msg_id, msg in user_msgs.messages.items():
+                    for msg_id_str, msg in user_msgs.messages.items():
+                        msg_id = int(msg_id_str)  # Convert string key to int
+                        print(f"Adding message {msg_id} to {username}'s messages")
                         self.messages[username][msg_id] = {
                             'id': msg.id,
                             'sender': msg.sender,
@@ -248,8 +345,27 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
                             'read': msg.read
                         }
                         self.next_msg_id = max(self.next_msg_id, msg.id + 1)
+                        
+                        # Create ChatMessage for active sessions
+                        message = chat_pb2.ChatMessage(
+                            id=msg.id,
+                            sender=msg.sender,
+                            recipient=msg.recipient,
+                            content=msg.content,
+                            timestamp=msg.timestamp,
+                            read=msg.read
+                        )
+                        
+                        # Notify active sessions
+                        if username in self.active_sessions:
+                            for q in self.active_sessions[username]:
+                                try:
+                                    q.put(message)
+                                except Exception as e:
+                                    print(f"Error notifying session: {e}")
             
             # Save changes to persistence
+            print("Saving changes to disk")
             self.persistence.save_accounts(self.accounts)
             self.persistence.save_messages(self.messages)
             self.persistence.save_msg_id(self.next_msg_id)
@@ -486,14 +602,51 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer, chat_pb2_grpc.ChatRe
             if request.sender not in self.messages:
                 self.messages[request.sender] = {}
             
-            # Store message for both sender and recipient
-            self.messages[request.recipient][msg_id] = message
-            self.messages[request.sender][msg_id] = message
+            # Create message with current timestamp
+            timestamp = datetime.now().isoformat()
             
-            # Persist changes and sync
+            # Create message object first
+            message = chat_pb2.ChatMessage(
+                id=msg_id,
+                sender=request.sender,
+                recipient=request.recipient,
+                content=request.content,
+                timestamp=timestamp,
+                read=False
+            )
+            
+            # Convert to dict for storage
+            message_dict = {
+                'id': msg_id,
+                'sender': request.sender,
+                'recipient': request.recipient,
+                'content': request.content,
+                'timestamp': timestamp,
+                'read': False
+            }
+            
+            print(f"Storing message {msg_id} from {request.sender} to {request.recipient}")
+            self.messages[request.recipient][msg_id] = message_dict
+            self.messages[request.sender][msg_id] = message_dict
+            
+            # Persist changes
+            print(f"Saving message to disk")
             self.persistence.save_messages(self.messages)
             self.persistence.save_msg_id(self.next_msg_id)
-            self.sync_with_other_servers()
+            
+            # Propagate the update to other servers
+            print(f"Propagating message to other servers")
+            self._propagate_update(chat_pb2.UpdateRequest.MESSAGE_SENT, message_dict)
+            
+            # Notify active sessions
+            print(f"Notifying active sessions")
+            for username in [request.sender, request.recipient]:
+                if username in self.active_sessions:
+                    for q in self.active_sessions[username]:
+                        try:
+                            q.put(message)
+                        except Exception as e:
+                            print(f"Error notifying session: {e}")
             
             # Print message dictionaries for debugging
             print(self.messages)
