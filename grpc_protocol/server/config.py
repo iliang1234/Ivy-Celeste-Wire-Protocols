@@ -11,9 +11,9 @@ def load_server_config():
         # Default configuration
         return {
             "servers": [
-                {"id": 0, "host": "localhost", "port": 65432},
-                {"id": 1, "host": "localhost", "port": 65433},
-                {"id": 2, "host": "localhost", "port": 65434}
+                {"id": 0, "host": "127.0.0.1", "port": 65432},
+                {"id": 1, "host": "127.0.0.1", "port": 65433},
+                {"id": 2, "host": "127.0.0.1", "port": 65434}
             ],
             "database": {
                 "type": "file",  # Can be "file" or "mongodb"

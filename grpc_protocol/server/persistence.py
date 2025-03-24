@@ -11,64 +11,67 @@ class DataPersistence:
         self.lock = threading.Lock()
         os.makedirs(self.data_dir, exist_ok=True)
         
-    def _message_to_dict(self, message):
-        # Handle both dict and ChatMessage objects
-        if isinstance(message, dict):
-            return message  # Already a dict, return as is
-        else:
-            return {
-                'id': message.id,
-                'sender': message.sender,
-                'recipient': message.recipient,
-                'content': message.content,
-                'timestamp': message.timestamp,
-                'read': message.read
-            }
+    # def _message_to_dict(self, message):
+    #     # Handle both dict and ChatMessage objects
+    #     if isinstance(message, dict):
+    #         return message  # Already a dict, return as is
+    #     else:
+    #         return {
+    #             'id': message.id,
+    #             'sender': message.sender,
+    #             'recipient': message.recipient,
+    #             'content': message.content,
+    #             'timestamp': message.timestamp,
+    #             'read': message.read
+    #         }
     
-    def _dict_to_message(self, data):
-        message = chat_pb2.ChatMessage()
-        message.id = data['id']
-        message.sender = data['sender']
-        message.recipient = data['recipient']
-        message.content = data['content']
-        message.timestamp = data['timestamp']
-        message.read = data['read']
-        return message
+    # def _dict_to_message(self, data):
+    #     message = chat_pb2.ChatMessage()
+    #     message.id = data['id']
+    #     message.sender = data['sender']
+    #     message.recipient = data['recipient']
+    #     message.content = data['content']
+    #     message.timestamp = data['timestamp']
+    #     message.read = data['read']
+    #     return message
     
+
     def save_messages(self, messages):
         with self.lock:
             messages_dict = {}
-            for username, user_messages in messages.items():
-                messages_dict[username] = {
-                    str(msg_id): self._message_to_dict(msg)
-                    for msg_id, msg in user_messages.items()
-                }
-            
-            # First write to temp file
+            for username, user_msgs in messages.items():
+                messages_dict[username] = {}
+                for msg_id, msg in user_msgs.items():
+                    # msg is already a dict in memory, so no conversion needed
+                    messages_dict[username][str(msg_id)] = msg
+
             temp_file = os.path.join(self.data_dir, 'messages.json.tmp')
             with open(temp_file, 'w') as f:
                 json.dump(messages_dict, f)
                 f.flush()
                 os.fsync(f.fileno())
-            
-            # Then atomically rename
+
             os.rename(temp_file, os.path.join(self.data_dir, 'messages.json'))
+
     
     def load_messages(self):
         try:
             with self.lock:
                 with open(os.path.join(self.data_dir, 'messages.json'), 'r') as f:
                     messages_dict = json.load(f)
-                
+
                 messages = {}
                 for username, user_messages in messages_dict.items():
-                    messages[username] = {
-                        int(msg_id): self._dict_to_message(msg_data)
-                        for msg_id, msg_data in user_messages.items()
-                    }
+                    messages[username] = {}
+                    for msg_id_str, msg_data in user_messages.items():
+                        msg_id = int(msg_id_str)
+                        # msg_data is already a dict with 'sender','recipient','content','timestamp','read'
+                        messages[username][msg_id] = msg_data
                 return messages
         except FileNotFoundError:
             return {}
+
+
     
     def save_accounts(self, accounts):
         with self.lock:

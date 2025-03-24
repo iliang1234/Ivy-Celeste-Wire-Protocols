@@ -7,9 +7,16 @@ from config import load_server_config, save_server_config
 
 def launch_server(server_config):
     return subprocess.Popen(
-        [sys.executable, "server.py", "--server-id", str(server_config['id'])],
+        [
+            sys.executable, 
+            "server.py", 
+            "--server-id", str(server_config['id']),
+            "--host", server_config['host'],
+            "--port", str(server_config['port'])
+        ],
         cwd=os.path.dirname(os.path.abspath(__file__))
     )
+
 
 def configure_servers():
     """Configure servers interactively"""

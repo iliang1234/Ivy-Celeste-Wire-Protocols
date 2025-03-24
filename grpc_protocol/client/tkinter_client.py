@@ -152,24 +152,23 @@ class GRPCClient:
                     f"{host}:{port}",
                     options=[
                         ('grpc.enable_http_proxy', 0),
-                        ('grpc.keepalive_time_ms', 10000),
-                        ('grpc.keepalive_timeout_ms', 5000),
+                        ('grpc.keepalive_time_ms', 30000),  # relaxed to 30s
+                        ('grpc.keepalive_timeout_ms', 10000),  # 10s timeout
                         ('grpc.keepalive_permit_without_calls', True),
-                        ('grpc.http2.min_time_between_pings_ms', 10000),
-                        ('grpc.http2.max_pings_without_data', 0),
+                        ('grpc.http2.min_time_between_pings_ms', 30000),  # at least 30s between pings
+                        ('grpc.http2.max_pings_without_data', 2),  # allow 2 pings without data
                         ('grpc.max_receive_message_length', 10 * 1024 * 1024),
                         ('grpc.max_reconnect_backoff_ms', 2000),
                     ]
                 )
                 
-                # Test connection with timeout
+                # Increase channel ready timeout to 5 seconds
                 future = grpc.channel_ready_future(channel)
-                future.result(timeout=2)  # Increased timeout
+                future.result(timeout=5)
                 
-                # Create stub and test RPC call
                 stub = chat_pb2_grpc.ChatClientServiceStub(channel)
                 request = chat_pb2.ListAccountsRequest()
-                stub.ListAccounts(request, timeout=2)  # Increased timeout
+                stub.ListAccounts(request, timeout=2)
                 
                 # Store working connection
                 if self.channels[i]:
@@ -203,6 +202,7 @@ class GRPCClient:
             return self.connect_to_servers()
         
         return connected
+
 
     def close(self):
         self.running = False

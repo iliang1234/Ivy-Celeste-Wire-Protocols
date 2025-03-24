@@ -1,4 +1,4 @@
-grpcio
+grpcio==1.71.0
 grpcio-tools
 protobuf
 bcrypt

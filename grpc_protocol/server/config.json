@@ -18,6 +18,6 @@
   ],
   "database": {
     "type": "file",
-    "connection": "/Users/iliang/Desktop/CS 2620/Ivy-Celeste-Wire-Protocols/server_data"
+    "connection": "/Users/celestecz/Downloads/CS262/wire_protocols/Ivy-Celeste-Wire-Protocols/server_data"
   }
 }
