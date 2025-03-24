@@ -3,6 +3,7 @@ import sys
 import time
 import signal
 import os
+import argparse
 from config import load_server_config, save_server_config
 
 def launch_server(server_config):
@@ -16,7 +17,6 @@ def launch_server(server_config):
         ],
         cwd=os.path.dirname(os.path.abspath(__file__))
     )
-
 
 def configure_servers():
     """Configure servers interactively"""
@@ -47,7 +47,13 @@ def configure_servers():
     print("\nConfiguration saved to config.json")
 
 def main():
-    if '--configure' in sys.argv:
+    parser = argparse.ArgumentParser(description="Launch chat servers.")
+    parser.add_argument("--configure", action="store_true", help="Configure server settings")
+    parser.add_argument("--server-ids", type=int, nargs="+", help="List of server IDs to launch (e.g., 0 1 2)")
+    parser.add_argument("--host", help="Override host for all launched servers")
+    args = parser.parse_args()
+
+    if args.configure:
         configure_servers()
         return
 
@@ -56,8 +62,21 @@ def main():
     servers = []
     
     try:
-        # Launch each server from config
-        for server_config in config['servers']:
+        # Filter servers based on provided server IDs
+        server_configs = config['servers']
+        if args.server_ids:
+            server_configs = [s for s in server_configs if s['id'] in args.server_ids]
+            if not server_configs:
+                print(f"No servers found with IDs: {args.server_ids}")
+                return
+        
+        # Launch specified servers from config
+        for server_config in server_configs:
+            # Override host if provided
+            if args.host:
+                server_config = dict(server_config)  # Make a copy
+                server_config['host'] = args.host
+            
             server = launch_server(server_config)
             servers.append(server)
             print(f"Started server {server_config['id']} at {server_config['host']}:{server_config['port']}")

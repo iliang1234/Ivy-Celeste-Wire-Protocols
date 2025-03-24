@@ -25,15 +25,16 @@ import chat_pb2
 import chat_pb2_grpc
 
 class GRPCClient:
-    def __init__(self, host: str = 'localhost', port: int = 65432):
+    def __init__(self):
         # Load server configuration
         sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from server.config import load_server_config
         self.config = load_server_config()
         
         # Initialize server connections
-        self.channels = [None] * 3  # Support for 3 servers
-        self.stubs = [None] * 3
+        num_servers = len(self.config['servers'])
+        self.channels = [None] * num_servers
+        self.stubs = [None] * num_servers
         self.active_stub_index = 0
         
         # Use a bounded queue to avoid memory issues
@@ -363,10 +364,8 @@ class GRPCClient:
         return self.message_listener_thread
 
 class ChatClient:
-    def __init__(self, host: str = '127.0.0.1', port: int = 65432):
-        self.host = host  # Store the host
-        self.port = port  # Store the port
-        self.grpc_client = GRPCClient(host, port)
+    def __init__(self):
+        self.grpc_client = GRPCClient()
         self.root = tk.Tk()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.reset_state()
@@ -936,7 +935,7 @@ class ChatClient:
             username = self.current_user
             self.current_user = None
             self.grpc_client.close()
-            self.grpc_client = GRPCClient(self.host, self.port)
+            self.grpc_client = GRPCClient()
             if hasattr(self, 'scrollable_frame'):
                 for widget in self.scrollable_frame.winfo_children():
                     widget.destroy()
@@ -969,14 +968,5 @@ class ChatClient:
             self.message_listener.join(timeout=1.0)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Start the chat client.")
-    parser.add_argument("--host", default=os.getenv("CHAT_SERVER_HOST", "127.0.0.1"),
-                        help="Server hostname or IP")
-    parser.add_argument("--port", type=int, default=int(os.getenv("CHAT_SERVER_PORT", "65432")),
-                        help="Server port")
-    args = parser.parse_args()
-
-    # Instantiate ChatClient (which uses GRPCClient internally)
-    client = ChatClient(args.host, args.port)
-    print(f"Connecting to server at {args.host}:{args.port}")
+    client = ChatClient()
     client.run()

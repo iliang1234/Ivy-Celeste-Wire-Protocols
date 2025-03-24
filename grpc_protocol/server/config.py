@@ -13,8 +13,8 @@ def load_server_config():
         # and read quorum of 2 to ensure we get the latest data
         return {
             "servers": [
-                {"id": 0, "host": "127.0.0.1", "port": 65432},
-                {"id": 1, "host": "127.0.0.1", "port": 65433},
+                {"id": 0, "host": "10.250.4.227", "port": 65432},
+                {"id": 1, "host": "10.250.4.227", "port": 65433},
                 {"id": 2, "host": "127.0.0.1", "port": 65434}
             ],
             "quorum": {
