@@ -1,0 +1,27 @@
+{
+    "replicas": [
+        {
+            "id": 0,
+            "host": "localhost",
+            "client_port": 65432,
+            "replica_port": 65433,
+            "data_dir": "data/replica_0"
+        },
+        {
+            "id": 1,
+            "host": "localhost",
+            "client_port": 65434,
+            "replica_port": 65435,
+            "data_dir": "data/replica_1"
+        },
+        {
+            "id": 2,
+            "host": "localhost",
+            "client_port": 65436,
+            "replica_port": 65437,
+            "data_dir": "data/replica_2"
+        }
+    ],
+    "election_timeout_ms": 1500,
+    "heartbeat_interval_ms": 500
+}

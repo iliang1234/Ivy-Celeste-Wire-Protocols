@@ -9,9 +9,10 @@ from datetime import datetime
 import time
 import os
 import argparse
+import re
 
 class ChatClient:
-    def __init__(self, host: str = '127.0.0.1', port: int = 65432):  
+    def __init__(self, host: str = '127.0.0.1', port: int = 65434):  
         self.host = host
         self.port = port
         self.socket = None
@@ -174,60 +175,210 @@ class ChatClient:
                     self.socket.close()
                 except Exception:
                     pass
+                self.socket = None
+                    
+            # Create new socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5)  # 5 second timeout for connection
-            self.socket.connect((self.host, self.port))
-            self.socket.settimeout(None)
-            return True
-        except Exception as e:
-            print(f"Failed to connect: {str(e)}")
-            messagebox.showerror("Connection Error", f"Failed to connect to server: {str(e)}")
-            return False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.settimeout(2)  # Shorter initial timeout
             
-    def send_request(self, data: bytes) -> tuple:
-        """Send a request to the server and receive the response"""
-        if (not self.socket) or (self.socket.fileno() == -1):
-            if not self.connect():
-                return MessageType.ERROR, b"Not connected to server", 0
-                
-        try:
-            with self.socket_lock:
-                self.socket.sendall(data)
-                self.socket.settimeout(5)
-                header_data = b''
-                remaining = 9
+            # Connect to server
+            print(f"Connecting to {self.host}:{self.port}...")
+            self.socket.connect((self.host, self.port))
+            
+            # Send health check
+            health_check = WireProtocol.health_check_request()
+            self.socket.sendall(health_check)
+            
+            # Receive response header
+            header_data = b''
+            remaining = 9
+            while remaining > 0:
+                chunk = self.socket.recv(remaining)
+                if not chunk:
+                    raise ConnectionError("Server closed connection")
+                header_data += chunk
+                remaining -= len(chunk)
+            
+            # Parse header
+            msg_type, payload_length, _ = WireProtocol.unpack_header(header_data)
+            
+            # Receive payload if any
+            payload = b''
+            if payload_length > 0:
+                remaining = payload_length
                 while remaining > 0:
                     chunk = self.socket.recv(remaining)
                     if not chunk:
                         raise ConnectionError("Server closed connection")
-                    header_data += chunk
+                    payload += chunk
                     remaining -= len(chunk)
-                    
-                msg_type, payload_length, num_items = WireProtocol.unpack_header(header_data)
-                
-                payload = b''
-                if payload_length > 0:
-                    remaining = payload_length
-                    while remaining > 0:
-                        chunk = self.socket.recv(remaining)
-                        if not chunk:
-                            raise ConnectionError("Server closed connection")
-                        payload += chunk
-                        remaining -= len(chunk)
-                        
-                return msg_type, payload, num_items
-                
+            
+            # Handle response
+            if msg_type == MessageType.ERROR:
+                error_msg = payload.decode('utf-8')
+                if "Not leader" in error_msg:
+                    match = re.search(r'Please connect to ([^:]+):([0-9]+)', error_msg)
+                    if match:
+                        new_host, new_port = match.groups()
+                        new_port = int(new_port)
+                        if (new_host, new_port) != (self.host, self.port):
+                            print(f"Redirecting to leader at {new_host}:{new_port}")
+                            self.host = new_host
+                            self.port = new_port
+                            time.sleep(0.1)  # Brief pause before reconnecting
+                            return self.connect()
+                raise ConnectionError(error_msg)
+            
+            # Successfully connected
+            self.socket.settimeout(None)
+            print("Successfully connected to server")
+            return True
+            
         except Exception as e:
-            print(f"Error in send_request: {str(e)}")
-            if isinstance(e, (ConnectionError, socket.timeout)):
-                self.root.after(0, self.logout)
-            return MessageType.ERROR, str(e).encode(), 0
+            if self.socket:
+                try:
+                    self.socket.close()
+                except:
+                    pass
+                self.socket = None
+            print(f"Connection failed: {str(e)}")
+            return False
+            
+    def receive_data(self, n: int, timeout: int = 5) -> Optional[bytes]:
+        """Receive exactly n bytes with timeout"""
+        if not self.socket:
+            return None
+            
+        data = bytearray()
+        bytes_received = 0
+        start_time = time.time()
+        
+        try:
+            while bytes_received < n:
+                remaining = n - bytes_received
+                elapsed = time.time() - start_time
+                
+                if elapsed >= timeout:
+                    print(f"Timeout after receiving {bytes_received}/{n} bytes")
+                    return None
+                    
+                # Set a shorter timeout for each recv
+                self.socket.settimeout(min(1.0, timeout - elapsed))
+                
+                try:
+                    chunk = self.socket.recv(min(remaining, 1024))
+                    if not chunk:  # Connection closed
+                        print(f"Connection closed after receiving {bytes_received}/{n} bytes")
+                        return None
+                        
+                    data.extend(chunk)
+                    bytes_received += len(chunk)
+                    
+                except socket.timeout:
+                    continue  # Try again if we haven't exceeded total timeout
+                except ConnectionError as e:
+                    print(f"Connection error: {e}")
+                    return None
+                except Exception as e:
+                    print(f"Unexpected error in receive_data: {e}")
+                    return None
+                    
+            return bytes(data)
+            
+        except Exception as e:
+            print(f"Error in receive_data: {e}")
+            return None
             
         finally:
             try:
                 self.socket.settimeout(None)
-            except Exception:
-                pass
+            except:
+                pass  # Socket might be closed
+            
+    def send_request(self, data: bytes, max_retries: int = 3) -> tuple:
+        """Send a request to the server and receive the response"""
+        retries = 0
+        last_error = None
+        
+        while retries < max_retries:
+            try:
+                if (not self.socket) or (self.socket.fileno() == -1):
+                    if not self.connect():
+                        raise ConnectionError("Failed to establish connection")
+                    
+                with self.socket_lock:
+                    # Send request with retry
+                    total_sent = 0
+                    start_time = time.time()
+                    while total_sent < len(data):
+                        try:
+                            sent = self.socket.send(data[total_sent:])
+                            if sent == 0:
+                                raise ConnectionError("Connection broken")
+                            total_sent += sent
+                        except socket.timeout:
+                            if time.time() - start_time > 5:
+                                raise ConnectionError("Send timeout")
+                            continue
+                    
+                    # Receive header
+                    header_data = self.receive_data(9, timeout=2)
+                    if not header_data:
+                        raise ConnectionError("Failed to receive header")
+                    
+                    msg_type, payload_length, num_items = WireProtocol.unpack_header(header_data)
+                    
+                    # Receive payload
+                    payload = b''
+                    if payload_length > 0:
+                        payload = self.receive_data(payload_length, timeout=5)
+                        if not payload:
+                            raise ConnectionError("Failed to receive payload")
+                    
+                    # Handle leader redirection
+                    if msg_type == MessageType.ERROR:
+                        error_msg = payload.decode('utf-8')
+                        if "Not leader" in error_msg:
+                            match = re.search(r'Please connect to ([^:]+):([0-9]+)', error_msg)
+                            if match:
+                                leader_host, leader_port = match.groups()
+                                leader_port = int(leader_port)
+                                print(f"Redirecting to leader at {leader_host}:{leader_port}")
+                                
+                                # Close current connection
+                                try:
+                                    self.socket.close()
+                                except:
+                                    pass
+                                self.socket = None
+                                
+                                # Update connection details
+                                self.host = leader_host
+                                self.port = leader_port
+                                
+                                # Increment retries and continue
+                                retries += 1
+                                continue
+                    return msg_type, payload, num_items
+                    
+            except Exception as e:
+                print(f"Error in send_request (attempt {retries + 1}): {e}")
+                last_error = e
+                try:
+                    self.socket.close()
+                except:
+                    pass
+                self.socket = None
+                retries += 1
+                continue
+            
+        # If we get here, all retries failed
+        error_msg = f"Failed after {max_retries} attempts. Last error: {last_error}"
+        print(error_msg)
+        return MessageType.ERROR, error_msg.encode(), 0
+                
+
 
     def login(self):
         """Handle user login"""

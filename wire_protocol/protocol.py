@@ -27,8 +27,10 @@ class MessageType(IntEnum):
     NEW_MESSAGE_NOTIFICATION = 10
     MESSAGE_DELETED_NOTIFICATION = 11
     DELETE_MESSAGE_NOTIFICATION = MESSAGE_DELETED_NOTIFICATION
-
     ACCOUNT_DELETED_NOTIFICATION = 12
+    
+    # System operations
+    HEALTH_CHECK = 13
 
     @classmethod
     def _missing_(cls, value):
@@ -191,6 +193,11 @@ class WireProtocol:
         payload = message_bytes + (data if data else b'')
         header = WireProtocol.pack_header(MessageType.SUCCESS, len(payload))
         return header + payload
+    
+    @staticmethod
+    def health_check_request() -> bytes:
+        """Create a health check request"""
+        return WireProtocol.pack_header(MessageType.HEALTH_CHECK, 0)
     
     @staticmethod
     def error_response(message: str) -> bytes:
