@@ -8,16 +8,23 @@ def load_server_config():
         with open(config_path, 'r') as f:
             return json.load(f)
     except FileNotFoundError:
-        # Default configuration
+        # Default configuration for 3 servers
+        # For 3 servers, we need write quorum of 2 to maintain consistency
+        # and read quorum of 2 to ensure we get the latest data
         return {
             "servers": [
                 {"id": 0, "host": "127.0.0.1", "port": 65432},
                 {"id": 1, "host": "127.0.0.1", "port": 65433},
                 {"id": 2, "host": "127.0.0.1", "port": 65434}
             ],
+            "quorum": {
+                "read": 2,   # Minimum servers needed for a successful read
+                "write": 2   # Minimum servers needed for a successful write
+            },
             "database": {
-                "type": "file",  # Can be "file" or "mongodb"
-                "connection": "server_data"  # Directory for file storage or MongoDB connection string
+                "type": "file",
+                "connection": "server_data",
+                "sync_interval": 5  # How often to sync state in seconds
             }
         }
 

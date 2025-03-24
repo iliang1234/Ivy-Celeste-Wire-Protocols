@@ -44,19 +44,26 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
             if server['id'] != server_id
         ]
         
+        # Quorum settings for 2-fault tolerance
+        self.read_quorum = self.config['quorum']['read']
+        self.write_quorum = self.config['quorum']['write']
+        
         # Initialize replication state
         self.version = int(time.time() * 1000)  # Lamport timestamp
         self.replication_stubs = {}  # (host,port)-> stub
         self.channels = {}           # (host,port)-> channel
+        self.server_states = {}      # (host,port)-> last known state version
         
         # Load data from local persistent files
         self.messages = self.persistence.load_messages() or {}
         self.accounts = self.persistence.load_accounts() or {}
         self.next_msg_id = self.persistence.load_msg_id() or 0
         
-        # Start background thread for server discovery
+        # Start background threads
         self.discovery_thread = threading.Thread(target=self._server_discovery, daemon=True)
+        self.sync_thread = threading.Thread(target=self._periodic_sync, daemon=True)
         self.discovery_thread.start()
+        self.sync_thread.start()
     
     def _server_discovery(self):
         """Background thread that repeatedly attempts to connect or re-connect to other servers
@@ -118,10 +125,10 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
         time.sleep(2)
 
 
-    def _sync_with_server(self, stub):
+    def _sync_with_server(self, stub, host_port=None):
         """
         Request a full state sync from the given stub.
-        Relax the version check to '>= self.version' so we do not skip in edge cases.
+        Returns True if sync was successful, False otherwise.
         """
         try:
             request = chat_pb2.SyncRequest(
@@ -131,12 +138,28 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
             response = stub.SyncState(request, timeout=5)
             remote_version = response.state.version
             
+            if host_port:
+                self.server_states[host_port] = remote_version
+            
             print(f"[Sync] Received SyncState from remote_version={remote_version}, local_version={self.version}")
             
-            # We relax this to >= to ensure we always pull if the remote is up-to-date or "newer"
-            if remote_version >= self.version:
-                print(f"[Sync] Updating local version from {self.version} to {remote_version}.")
-                self.version = remote_version
+            # Check if we have quorum for this version
+            version_counts = {}
+            for version in self.server_states.values():
+                version_counts[version] = version_counts.get(version, 0) + 1
+            
+            # Find version with highest quorum
+            max_quorum = 0
+            quorum_version = None
+            for version, count in version_counts.items():
+                if count >= self.read_quorum and count > max_quorum:
+                    max_quorum = count
+                    quorum_version = version
+            
+            # Only update if we have quorum and remote version is newer
+            if quorum_version and quorum_version > self.version:
+                print(f"[Sync] Quorum achieved for version {quorum_version}. Updating local state.")
+                self.version = quorum_version
                 
                 # Overwrite local accounts
                 remote_accounts = response.state.accounts
@@ -171,18 +194,49 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
                 self.persistence.save_accounts(self.accounts)
                 self.persistence.save_messages(self.messages)
                 self.persistence.save_msg_id(self.next_msg_id)
+                return True
             else:
-                # If the remote is older, we do nothing
-                print(f"[Sync] Remote version={remote_version} is < local_version={self.version}; skipping.")
+                print(f"[Sync] No quorum or remote version={remote_version} is <= local_version={self.version}; skipping.")
+                return False
         
         except Exception as e:
             print(f"[Sync] Error syncing with server: {e}")
+            return False
 
+    def _periodic_sync(self):
+        """Background thread that periodically syncs state with other servers"""
+        while True:
+            try:
+                # Get list of active stubs
+                active_stubs = list(self.replication_stubs.items())
+                if not active_stubs:
+                    time.sleep(self.config['database']['sync_interval'])
+                    continue
+                
+                # Try to sync with each server
+                successful_syncs = 0
+                for (host, port), stub in active_stubs:
+                    try:
+                        if self._sync_with_server(stub, (host, port)):
+                            successful_syncs += 1
+                    except Exception as e:
+                        print(f"[Sync] Error syncing with {host}:{port}: {e}")
+                
+                # Check if we have write quorum
+                if successful_syncs >= self.write_quorum:
+                    print(f"[Sync] Write quorum achieved with {successful_syncs} servers")
+                else:
+                    print(f"[Sync] Warning: Only synced with {successful_syncs} servers, need {self.write_quorum} for write quorum")
+            
+            except Exception as e:
+                print(f"[Sync] Error in periodic sync: {e}")
+            
+            time.sleep(self.config['database']['sync_interval'])
+    
     def _propagate_update(self, update_type, affected_data=None):
         """
         Send an UpdateRequest with a minimal delta to every known server.
-        If they fail, we only log the error and continue so that we remain functional.
-        We do NOT remove them from replication_stubs here; we let the discovery thread keep re-trying.
+        Requires write quorum for success.
         """
         with self.lock:
             # Update our logical clock

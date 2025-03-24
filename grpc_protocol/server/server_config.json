@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "id": 0,
+      "host": "localhost",
+      "port": 65432
+    },
+    {
+      "id": 1,
+      "host": "localhost",
+      "port": 65433
+    },
+    {
+      "id": 2,
+      "host": "localhost",
+      "port": 65434
+    }
+  ]
+}

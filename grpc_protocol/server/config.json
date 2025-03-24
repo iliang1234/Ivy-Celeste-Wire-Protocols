@@ -2,22 +2,27 @@
   "servers": [
     {
       "id": 0,
-      "host": "localhost",
+      "host": "127.0.0.1",
       "port": 65432
     },
     {
       "id": 1,
-      "host": "localhost",
+      "host": "127.0.0.1",
       "port": 65433
     },
     {
       "id": 2,
-      "host": "localhost",
+      "host": "127.0.0.1",
       "port": 65434
     }
   ],
+  "quorum": {
+    "read": 2,
+    "write": 2
+  },
   "database": {
     "type": "file",
-    "connection": "/Users/celestecz/Downloads/CS262/wire_protocols/Ivy-Celeste-Wire-Protocols/server_data"
+    "connection": "server_data",
+    "sync_interval": 5
   }
 }

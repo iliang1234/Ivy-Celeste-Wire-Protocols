@@ -37,18 +37,46 @@ class DataPersistence:
     
 
     def save_messages(self, messages):
+        """Save messages with atomic file write to prevent corruption"""
         with self.lock:
             messages_dict = {}
             for username, user_msgs in messages.items():
                 messages_dict[username] = {}
                 for msg_id, msg in user_msgs.items():
-                    # msg is already a dict in memory, so no conversion needed
                     messages_dict[username][str(msg_id)] = msg
 
+            # Write to temporary file first
             temp_file = os.path.join(self.data_dir, 'messages.json.tmp')
-            with open(temp_file, 'w') as f:
-                json.dump(messages_dict, f)
-                f.flush()
+            target_file = os.path.join(self.data_dir, 'messages.json')
+            backup_file = os.path.join(self.data_dir, 'messages.json.bak')
+            
+            try:
+                # Write to temp file
+                with open(temp_file, 'w') as f:
+                    json.dump(messages_dict, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                
+                # Create backup of current file if it exists
+                if os.path.exists(target_file):
+                    if os.path.exists(backup_file):
+                        os.remove(backup_file)
+                    os.rename(target_file, backup_file)
+                
+                # Atomically move temp file to target
+                os.rename(temp_file, target_file)
+                
+                # Success - remove backup
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
+                    
+            except Exception as e:
+                print(f"Error saving messages: {e}")
+                # Try to restore from backup if save failed
+                if os.path.exists(backup_file):
+                    if os.path.exists(target_file):
+                        os.remove(target_file)
+                    os.rename(backup_file, target_file)
                 os.fsync(f.fileno())
 
             os.rename(temp_file, os.path.join(self.data_dir, 'messages.json'))
