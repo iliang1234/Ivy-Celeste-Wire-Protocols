@@ -15,7 +15,7 @@ def load_server_config():
             "servers": [
                 {"id": 0, "host": "10.250.4.227", "port": 65432},
                 {"id": 1, "host": "10.250.4.227", "port": 65433},
-                {"id": 2, "host": "127.0.0.1", "port": 65434}
+                {"id": 2, "host": "10.250.214.226", "port": 65434}
             ],
             "quorum": {
                 "read": 2,   # Minimum servers needed for a successful read

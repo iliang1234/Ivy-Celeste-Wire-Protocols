@@ -47,7 +47,7 @@ pip install -r requirements.txt
 
 ### Single Machine Setup
 
-1. Start all servers:
+1. Start servers (3):
 ```bash
 python3 grpc_protocol/server/launch_servers.py
 ```
@@ -69,30 +69,15 @@ ipconfig
 # Look for IPv4 Address (e.g., 192.168.1.100)
 ```
 
-2. Configure server locations (do this on one machine):
+2. Edit config.json and config.py to specify host and port numbers for each machine.
+
+3. Start the three servers:
 ```bash
-python3 grpc_protocol/server/launch_servers.py --configure
-```
-When prompted:
-- Enter the IP address of each machine (e.g., 192.168.1.100)
-- Use default ports (65432, 65433, 65434) or choose your own
-
-3. Copy the generated config to all machines:
-- Copy `grpc_protocol/server/config.json` to the same location on all machines
-
-4. Start servers (one per machine):
-```bash
-# On machine 1:
-python3 grpc_protocol/server/server.py --server-id 0
-
-# On machine 2:
-python3 grpc_protocol/server/server.py --server-id 1
-
-# On machine 3:
-python3 grpc_protocol/server/server.py --server-id 2
+python3 grpc_protocol/server/launch_servers.py --server-ids 0 1 --host 10.250.4.227
+python3 grpc_protocol/server/launch_servers.py --server-ids 2 --host 10.250.214.226
 ```
 
-5. Start clients on any machine:
+4. Start the client:
 ```bash
 python3 grpc_protocol/client/tkinter_client.py
 ```

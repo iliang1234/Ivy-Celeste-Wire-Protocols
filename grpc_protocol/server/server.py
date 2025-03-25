@@ -479,10 +479,30 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
             return chat_pb2.SendMessageResponse(success=False, message='Recipient not found')
         
         with self.lock:
+            # Check for duplicate message within a small time window (100ms)
+            current_time = datetime.now()
+            
+            # Check recent messages in sender's history
+            if request.sender in self.messages:
+                for msg in self.messages[request.sender].values():
+                    if (msg['sender'] == request.sender and
+                        msg['recipient'] == request.recipient and
+                        msg['content'] == request.content):
+                        # Check if message was sent within last 100ms
+                        msg_time = datetime.fromisoformat(msg['timestamp'])
+                        if abs((current_time - msg_time).total_seconds()) < 0.1:
+                            # This is likely a duplicate, return existing message ID
+                            return chat_pb2.SendMessageResponse(
+                                success=True,
+                                message='Message sent',
+                                message_id=msg['id']
+                            )
+            
+            # No duplicate found, create new message
             msg_id = self.next_msg_id
             self.next_msg_id += 1
             
-            timestamp = datetime.now().isoformat()
+            timestamp = current_time.isoformat()
             message_dict = {
                 'id': msg_id,
                 'sender': request.sender,
@@ -531,22 +551,30 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
         
         with self.lock:
             relevant = []
-            user_msgs = self.messages.get(request.username, {})
+            seen_ids = set()  # Track message IDs we've seen
             
+            # Check messages where user is sender
+            user_msgs = self.messages.get(request.username, {})
             for m in user_msgs.values():
                 if request.sender:
-                    # Only messages in conversation with request.sender
-                    if m['sender'] == request.sender or m['recipient'] == request.sender:
-                        if m['recipient'] == request.username and not m['read']:
-                            m['read'] = True
-                        relevant.append(m)
-                else:
-                    # All messages for this user
-                    if m['recipient'] == request.username and not m['read']:
-                        m['read'] = True
-                    relevant.append(m)
+                    # Only messages between user and specified sender
+                    if m['recipient'] == request.sender:
+                        if m['id'] not in seen_ids:
+                            seen_ids.add(m['id'])
+                            relevant.append(m)
             
-            relevant.sort(key=lambda x: x['id'])
+            # Check messages where user is recipient
+            if request.sender:
+                sender_msgs = self.messages.get(request.sender, {})
+                for m in sender_msgs.values():
+                    if m['recipient'] == request.username:
+                        if m['id'] not in seen_ids:
+                            seen_ids.add(m['id'])
+                            if not m['read']:
+                                m['read'] = True
+                            relevant.append(m)
+            
+            relevant.sort(key=lambda x: x['timestamp'])
             
             proto_msgs = []
             for r in relevant:

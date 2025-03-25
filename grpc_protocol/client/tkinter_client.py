@@ -120,6 +120,10 @@ class GRPCClient:
             
     def read_messages(self, username: str, sender: str = None) -> List[chat_pb2.ChatMessage]:
         start_idx = self.active_stub_index
+        seen_messages = set()  # Track message IDs we've seen
+        all_messages = []
+
+        # Try to read from all available servers
         for i in range(3):
             idx = (start_idx + i) % 3
             if self.stubs[idx] is None:
@@ -130,16 +134,24 @@ class GRPCClient:
                 if sender:
                     request.sender = sender
                 response = self.stubs[idx].ReadMessages(request)
+                
+                # Only add messages we haven't seen before
+                for msg in response.messages:
+                    if msg.id not in seen_messages:
+                        seen_messages.add(msg.id)
+                        all_messages.append(msg)
+                
                 self.active_stub_index = idx
-                return list(response.messages)
             except Exception as e:
                 print(f"Failed to read messages from server {idx}: {e}")
                 self.stubs[idx] = None
                 continue
         
-        print("All servers failed while reading messages")
-        self.connect_to_servers()
-        return []
+        if not all_messages:
+            print("All servers failed while reading messages")
+            self.connect_to_servers()
+        
+        return sorted(all_messages, key=lambda x: x.timestamp)
 
     def connect_to_servers(self):
         connected = False
@@ -441,44 +453,39 @@ class ChatClient:
                     self.refresh_messages(force=True)
             return
 
-        # Replace temporary message with actual one
+        # First, check if this message already exists in our history
+        msg_exists = any(msg.id == message.id for msg in self.chat_histories[key])
+        if msg_exists:
+            return
+
+        # Then check if this is a temporary message being confirmed
         temp_msg_index = next((i for i, msg in enumerate(self.chat_histories[key]) 
-                                if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
+                            if (not hasattr(msg, "id") or not msg.id) and msg.content == message.content), -1)
         if temp_msg_index >= 0:
+            # Replace temporary message with confirmed one
             self.chat_histories[key][temp_msg_index] = message
             current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
             if current_recipient == other_user:
                 self.refresh_messages(force=True)
-        else:
-            # Prevent duplicate messages in chat history
-            msg_exists = any(msg.id == message.id for msg in self.chat_histories[key])
-            if not msg_exists:
-                # Insert message in chronological order
-                insert_idx = 0
-                for i, msg in enumerate(self.chat_histories[key]):
-                    if msg.timestamp > message.timestamp:
-                        break
-                    insert_idx = i + 1
-                self.chat_histories[key].insert(insert_idx, message)
-                
-                current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
-                if current_recipient == other_user:
-                    self.refresh_messages(force=True)
-                    # Only scroll to bottom for new messages
-                    if insert_idx == len(self.chat_histories[key]) - 1:
-                        self.messages_canvas.yview_moveto(1.0)
+            return
 
-                # Only increment unread count if:
-                # 1. Message is for current user
-                # 2. Message is from someone else
-                # 3. Either the window is minimized OR the recipient is not selected
-                if (message.recipient == self.current_user and 
-                    message.sender != self.current_user and 
-                    not message.read and
-                    (self.root.state() == 'iconic' or current_recipient != message.sender)):
-                    self.unread_count += 1
-                    self.root.title(f"Chat Client ({self.unread_count} unread)")
-                    message.read = True
+        # Add new message
+        self.chat_histories[key].append(message)
+        self.chat_histories[key].sort(key=lambda x: x.timestamp)
+
+        # Update UI if this chat is currently open
+        current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
+        if current_recipient == other_user:
+            self.refresh_messages(force=True)
+
+        # Handle unread count and notifications
+        if (message.recipient == self.current_user and 
+            message.sender != self.current_user and 
+            not message.read and
+            (self.root.state() == 'iconic' or current_recipient != message.sender)):
+            self.unread_count += 1
+            self.root.title(f"Chat Client ({self.unread_count} unread)")
+            message.read = True
 
             # Play sound notification if message is from the selected user
             if (message.recipient == self.current_user and 
@@ -900,34 +907,60 @@ class ChatClient:
         current_recipient = self.receiver_entry.get() if hasattr(self, 'receiver_entry') else None
         if not current_recipient:
             return
+            
+        chat_key = tuple(sorted([self.current_user, current_recipient]))
+        
+        # Clear display
         self.message_ids.clear()
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
+        
         if not force:
+            # Get messages from server
             messages = self.grpc_client.read_messages(self.current_user, current_recipient)
-            chat_key = tuple(sorted([self.current_user, current_recipient]))
-            self.chat_histories[chat_key] = messages
-        chat_key = tuple(sorted([self.current_user, current_recipient]))
+            
+            # Filter messages to only show those in this conversation
+            filtered_messages = []
+            seen_ids = set()  # Track message IDs we've seen
+            
+            for msg in messages:
+                # Only include messages between current user and recipient
+                if ((msg.sender == self.current_user and msg.recipient == current_recipient) or
+                    (msg.sender == current_recipient and msg.recipient == self.current_user)):
+                    # Skip if we've seen this message ID
+                    if msg.id not in seen_ids:
+                        seen_ids.add(msg.id)
+                        filtered_messages.append(msg)
+            
+            # Replace chat history with filtered messages
+            self.chat_histories[chat_key] = sorted(filtered_messages, key=lambda x: x.timestamp)
+        
+        # Get messages for display
         messages = self.chat_histories.get(chat_key, [])
-        messages = sorted(messages, key=lambda x: x.id)
+        
         try:
             messages_per_page = int(self.msg_per_page_var.get())
         except ValueError:
             messages_per_page = 10
             self.msg_per_page_var.set(str(messages_per_page))
+            
         total_messages = len(messages)
         self.total_msg_pages = max(1, (total_messages + messages_per_page - 1) // messages_per_page)
         if self.current_msg_page > self.total_msg_pages:
             self.current_msg_page = self.total_msg_pages
         if self.current_msg_page < 1:
             self.current_msg_page = 1
+            
         self.msg_page_var.set(f"Page {self.current_msg_page}/{self.total_msg_pages}")
         self.prev_msg_btn.config(state=tk.NORMAL if self.current_msg_page > 1 else tk.DISABLED)
         self.next_msg_btn.config(state=tk.NORMAL if self.current_msg_page < self.total_msg_pages else tk.DISABLED)
+        
         start_idx = (self.current_msg_page - 1) * messages_per_page
         end_idx = min(start_idx + messages_per_page, total_messages)
+        
         for msg in messages[start_idx:end_idx]:
             self.handle_message(msg)
+            
         self.messages_canvas.yview_moveto(1.0)
     
     def logout(self):
