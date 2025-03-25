@@ -479,24 +479,25 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
             return chat_pb2.SendMessageResponse(success=False, message='Recipient not found')
         
         with self.lock:
-            # Check for duplicate message within a small time window (100ms)
+            # Check for duplicate message within a small time window (500ms)
             current_time = datetime.now()
             
-            # Check recent messages in sender's history
-            if request.sender in self.messages:
-                for msg in self.messages[request.sender].values():
-                    if (msg['sender'] == request.sender and
-                        msg['recipient'] == request.recipient and
-                        msg['content'] == request.content):
-                        # Check if message was sent within last 100ms
-                        msg_time = datetime.fromisoformat(msg['timestamp'])
-                        if abs((current_time - msg_time).total_seconds()) < 0.1:
-                            # This is likely a duplicate, return existing message ID
-                            return chat_pb2.SendMessageResponse(
-                                success=True,
-                                message='Message sent',
-                                message_id=msg['id']
-                            )
+            # Check messages in both sender and recipient history
+            for username in [request.sender, request.recipient]:
+                if username in self.messages:
+                    for msg in self.messages[username].values():
+                        if (msg['sender'] == request.sender and
+                            msg['recipient'] == request.recipient and
+                            msg['content'] == request.content):
+                            # Check if message was sent within last 500ms
+                            msg_time = datetime.fromisoformat(msg['timestamp'])
+                            if abs((current_time - msg_time).total_seconds()) < 0.5:
+                                # This is likely a duplicate, return existing message ID
+                                return chat_pb2.SendMessageResponse(
+                                    success=True,
+                                    message='Message sent',
+                                    message_id=msg['id']
+                                )
             
             # No duplicate found, create new message
             msg_id = self.next_msg_id
@@ -512,22 +513,24 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
                 'read': False
             }
             
+            # Initialize message lists if needed
             if request.sender not in self.messages:
                 self.messages[request.sender] = {}
             if request.recipient not in self.messages:
                 self.messages[request.recipient] = {}
             
+            # Store message for both sender and recipient
             self.messages[request.sender][msg_id] = message_dict
             self.messages[request.recipient][msg_id] = message_dict
             
-            # Persist
+            # Persist immediately
             self.persistence.save_messages(self.messages)
             self.persistence.save_msg_id(self.next_msg_id)
             
-            # Replicate
+            # Replicate to other servers first
             self._propagate_update(chat_pb2.UpdateRequest.MESSAGE_SENT, message_dict)
             
-            # Notify streaming sessions
+            # Create protobuf message
             chat_msg = chat_pb2.ChatMessage(
                 id=msg_id,
                 sender=request.sender,
@@ -536,6 +539,8 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
                 timestamp=timestamp,
                 read=False
             )
+            
+            # Then notify streaming sessions
             for username in [request.sender, request.recipient]:
                 if username in self.active_sessions:
                     for q in self.active_sessions[username]:

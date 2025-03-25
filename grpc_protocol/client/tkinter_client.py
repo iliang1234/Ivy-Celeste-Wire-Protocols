@@ -453,10 +453,18 @@ class ChatClient:
                     self.refresh_messages(force=True)
             return
 
-        # First, check if this message already exists in our history
-        msg_exists = any(msg.id == message.id for msg in self.chat_histories[key])
-        if msg_exists:
-            return
+        # Check for duplicate message by ID and content
+        for existing_msg in self.chat_histories[key]:
+            if existing_msg.id == message.id:
+                # Message with same ID exists
+                return
+            if (existing_msg.sender == message.sender and
+                existing_msg.recipient == message.recipient and
+                existing_msg.content == message.content and
+                abs((datetime.fromisoformat(existing_msg.timestamp) - 
+                     datetime.fromisoformat(message.timestamp)).total_seconds()) < 0.5):
+                # Very similar message within 500ms window
+                return
 
         # Then check if this is a temporary message being confirmed
         temp_msg_index = next((i for i, msg in enumerate(self.chat_histories[key]) 

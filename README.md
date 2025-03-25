@@ -74,7 +74,7 @@ ipconfig
 3. Start the three servers:
 ```bash
 python3 grpc_protocol/server/launch_servers.py --server-ids 0 1 --host 10.250.4.227
-python3 grpc_protocol/server/launch_servers.py --server-ids 2 --host 10.250.214.226
+python3 grpc_protocol/server/launch_servers.py --server-ids 2 --host 10.250.4.189
 ```
 
 4. Start the client:
