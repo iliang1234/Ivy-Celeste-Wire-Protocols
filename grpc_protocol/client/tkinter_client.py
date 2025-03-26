@@ -462,7 +462,7 @@ class ChatClient:
                 existing_msg.recipient == message.recipient and
                 existing_msg.content == message.content and
                 abs((datetime.fromisoformat(existing_msg.timestamp) - 
-                     datetime.fromisoformat(message.timestamp)).total_seconds()) < 0.5):
+                     datetime.fromisoformat(message.timestamp)).total_seconds()) < 12):
                 # Very similar message within 500ms window
                 return
 

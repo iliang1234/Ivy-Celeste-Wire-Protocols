@@ -122,7 +122,7 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
                                 pass
                             self.channels.pop((host, port), None)
                             self.replication_stubs.pop((host, port), None)
-        time.sleep(2)
+            time.sleep(2)
 
 
     def _sync_with_server(self, stub, host_port=None):
@@ -232,59 +232,6 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
                 print(f"[Sync] Error in periodic sync: {e}")
             
             time.sleep(self.config['database']['sync_interval'])
-    
-    def _propagate_update(self, update_type, affected_data=None):
-        """
-        Send an UpdateRequest with a minimal delta to every known server.
-        Requires write quorum for success.
-        """
-        with self.lock:
-            # Update our logical clock
-            self.version = max(self.version, int(time.time() * 1000)) + 1
-            
-            # Build minimal delta state
-            delta = chat_pb2.ServerState(
-                version=self.version,
-                next_msg_id=self.next_msg_id
-            )
-            if affected_data:
-                if update_type in [chat_pb2.UpdateRequest.ACCOUNT_CREATED,
-                                   chat_pb2.UpdateRequest.ACCOUNT_DELETED]:
-                    username = affected_data
-                    # Only include the account if it still exists locally
-                    if username in self.accounts:
-                        delta.accounts[username].password_hash = self.accounts[username]['password_hash']
-                
-                elif update_type == chat_pb2.UpdateRequest.MESSAGE_SENT:
-                    msg = affected_data
-                    for user in [msg['sender'], msg['recipient']]:
-                        if user not in delta.messages:
-                            delta.messages[user] = chat_pb2.UserMessages()
-                        chat_msg = chat_pb2.ChatMessage(
-                            id=msg['id'],
-                            sender=msg['sender'],
-                            recipient=msg['recipient'],
-                            content=msg['content'],
-                            timestamp=msg['timestamp'],
-                            read=msg['read']
-                        )
-                        delta.messages[user].messages[str(msg['id'])].CopyFrom(chat_msg)
-            
-            request = chat_pb2.UpdateRequest(
-                type=update_type,
-                delta_state=delta,
-                version=self.version
-            )
-            
-            # Broadcast to all stubs
-            for (host, port), stub in list(self.replication_stubs.items()):
-                try:
-                    response = stub.PropagateUpdate(request, timeout=5)
-                    if not response.success:
-                        print(f"[Propagate] {host}:{port} rejected update: {response.message}")
-                except Exception as e:
-                    print(f"[Propagate] Failed to update {host}:{port}: {e}")
-                    # We won't remove them from replication_stubs, so the discovery thread can keep trying
 
     # ------------------------------------------------------------------------
     # Replication service handlers (used by other servers calling into us)
@@ -491,7 +438,7 @@ class ChatServicer(chat_pb2_grpc.ChatClientServiceServicer,
                             msg['content'] == request.content):
                             # Check if message was sent within last 500ms
                             msg_time = datetime.fromisoformat(msg['timestamp'])
-                            if abs((current_time - msg_time).total_seconds()) < 0.5:
+                            if abs((current_time - msg_time).total_seconds()) < 12:
                                 # This is likely a duplicate, return existing message ID
                                 return chat_pb2.SendMessageResponse(
                                     success=True,
